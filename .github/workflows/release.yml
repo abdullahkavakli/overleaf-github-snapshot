@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify tag matches package version
+        run: |
+          package_version="$(node -p "require('./package.json').version")"
+          test "v${package_version}" = "${GITHUB_REF_NAME}"
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build extension
+        run: npm run build:no-typecheck
+
+      - name: Package Chrome extension
+        run: |
+          zip_name="overleaf-snapshot-to-github-${GITHUB_REF_NAME}.zip"
+          cd dist
+          zip -r "../${zip_name}" . \
+            -x '.agents' '.agents/*' \
+            -x '.claude' '.claude/*' \
+            -x '.codex' '.codex/*' \
+            -x '.cursor' '.cursor/*' \
+            -x '.windsurf' '.windsurf/*' \
+            -x '.continue' '.continue/*' \
+            -x '.aider*'
+          cd ..
+          unzip -Z1 "${zip_name}" | grep -qx 'manifest.json'
+          echo "ZIP_NAME=${zip_name}" >> "${GITHUB_ENV}"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" "${ZIP_NAME}" --title "${GITHUB_REF_NAME}" --notes "Chrome extension build for ${GITHUB_REF_NAME}."

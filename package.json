@@ -1,0 +1,37 @@
+{
+  "name": "overleaf-snapshot-to-github",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Chrome extension that commits Overleaf source ZIP snapshots to a GitHub repository.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/abdullahkavakli/Overleaf-Snapshot-to-GitHub.git"
+  },
+  "bugs": {
+    "url": "https://github.com/abdullahkavakli/Overleaf-Snapshot-to-GitHub/issues"
+  },
+  "homepage": "https://github.com/abdullahkavakli/Overleaf-Snapshot-to-GitHub#readme",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "build:no-typecheck": "vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@crxjs/vite-plugin": "^2.0.0-beta.25",
+    "@types/chrome": "^0.0.270",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "typescript": "^5.5.3",
+    "vite": "^5.3.4"
+  }
+}
