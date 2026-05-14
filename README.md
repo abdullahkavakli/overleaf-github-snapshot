@@ -46,26 +46,28 @@ Manual ZIP upload is **always available**, even if automatic fetch fails. The er
 
 ### C. Experimental — Overleaf Live Sync (off by default)
 
-The options page contains an **Experimental Overleaf Live Sync** section, fully disabled by default. When enabled, it exposes:
+The options page contains an **Experimental Overleaf Live Sync** section, fully disabled by default. The status of each capability as of this release:
 
-- **Live read-only pull** — read the project's docs and files through the live session and feed them into the same diff/commit pipeline. Falls back to ZIP if Overleaf's protocol cannot be safely detected.
-- **Explicit Overleaf write-back** — push selected text files back to Overleaf with strict guard rails: backup, conflict detection, typed confirmation, version-checked OT. If the safe document version cannot be confirmed, write-back refuses to proceed.
-- **Local replica prototype** — choose a local folder (File System Access API), compare it against Overleaf, and pull/push only after explicit confirmation. No background sync. No silent overwrites.
+- **Live read-only pull** *(probe only)* — the popup button exists and reaches the Overleaf real-time handshake, but the document channel itself is a stub: any project containing text documents will fail with `protocol_unavailable` and the popup falls back to ZIP. Useful for confirming the handshake works on your build; not yet useful for fetching real content. A working document channel is slated for a future release.
+- **Explicit Overleaf write-back** *(module only — no UI)* — the code path (`writeSelectedFilesBackToOverleaf`, conflict detector, OT helper, backup gate, typed confirmation contract) is implemented and exported, but there is no popup or options UI that calls it in this build. Toggling the option has no visible effect yet. When the live channel lands, this is the next surface to wire up.
+- **Local replica prototype** *(module only — no UI)* — `localReplicaManager`, `localFolderAccess`, and the three-way `localConflictDetector` are implemented, but there is no UI that picks a folder, compares, or pulls. The File System Access API requirement is real for when the UI lands. See "Local replica prototype" below for the planned shape.
 
-Each experimental capability has its own toggle and only appears in the popup once enabled. Settings include:
+Each experimental capability still has its own settings toggle, so future revisions can wire the UI without changing storage. Settings include:
 
 - Require ZIP backup before write-back (default ON)
 - Require typed confirmation before write-back (default ON)
 - Allow binary file write-back (default OFF)
 - Allowed write-back extensions (default `.tex`, `.bib`, `.cls`, `.sty`, `.bst`, `.md`, `.txt`)
 
-> **Important.** Experimental live sync depends on Overleaf internals that may break without warning. The stable ZIP route is always available as a fallback.
+> **Important.** Experimental live sync depends on Overleaf internals that may break without warning. The stable ZIP route is always available as a fallback. Even when the live read-only pull only fetches a partial snapshot, the popup blocks deletion-style commits until warnings clear, so partial fetches cannot silently remove files from your GitHub branch.
 
-## Local replica prototype
+## Local replica prototype (modules only — no UI yet)
 
-The local replica feature requires the [File System Access API](https://developer.mozilla.org/en-US/docs/Web/API/File_System_Access_API) (Chrome, Edge, Opera). When the API is missing the feature stays disabled and the UI shows: *Local replica requires File System Access API or a native helper.*
+> **Status:** the modules described below ship in `src/localReplica/` and are reachable from code, but **no UI in this build calls them**. The feature toggle in options has no visible effect yet. This section describes the planned shape; it is not yet user-runnable. When the UI lands, it will live on the options page or a dedicated section of the popup.
 
-Capabilities:
+The local replica feature requires the [File System Access API](https://developer.mozilla.org/en-US/docs/Web/API/File_System_Access_API) (Chrome, Edge, Opera). When the API is missing the feature will stay disabled and the UI will show: *Local replica requires File System Access API or a native helper.*
+
+Planned capabilities:
 
 - Choose a local folder.
 - Compare Overleaf ↔ Local with explicit `unchanged / local_modified / overleaf_modified / both_modified_conflict / local_only / overleaf_only / deleted_local / deleted_overleaf` statuses.
@@ -73,7 +75,7 @@ Capabilities:
 - Write selected local files back to Overleaf (only after explicit confirmation, conflict check, and backup).
 - Commit local snapshot to GitHub via the normal commit pipeline.
 
-There is **no** automatic background sync, **no** filesystem watcher, **no** silent overwrite, and **no** automatic conflict resolution.
+Even once wired, there will be **no** automatic background sync, **no** filesystem watcher, **no** silent overwrite, and **no** automatic conflict resolution.
 
 ## Security
 
