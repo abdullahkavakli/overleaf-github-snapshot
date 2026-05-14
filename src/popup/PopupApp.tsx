@@ -250,11 +250,19 @@ export function Popup(): React.ReactElement {
   const onCommit = useCallback(async () => {
     if (phase.kind !== 'preview' || !config || !token) return;
     if (!phase.commitMessage.trim()) return;
-    if (!hasActionableChanges(phase.diffs, phase.includeDeletions)) return;
+    // Defense in depth: a snapshot with fetch warnings is potentially
+    // incomplete. Files that failed to fetch will appear as "deleted" in
+    // the diff because computeDiff sees them in GitHub but not in the
+    // snapshot. Honoring includeDeletions in that state would silently
+    // remove real files from GitHub. Force the flag off here even if the
+    // UI checkbox somehow ended up enabled.
+    const effectiveIncludeDeletions =
+      phase.snapshot.warnings.length > 0 ? false : phase.includeDeletions;
+    if (!hasActionableChanges(phase.diffs, effectiveIncludeDeletions)) return;
 
     const effectiveConfig: RepoConfig = {
       ...config,
-      includeDeletions: phase.includeDeletions,
+      includeDeletions: effectiveIncludeDeletions,
     };
 
     setPhase({ kind: 'committing', progress: 'Starting commit…' });
@@ -504,33 +512,34 @@ function ReadyView({
             warning. The ZIP route above is always available as a fallback.
           </div>
           {experimental.liveReadOnlyPullEnabled && (
-            <button
-              className="button full"
-              type="button"
-              onClick={onLiveReadOnly}
-              disabled={!overleafContext}
-              title={
-                overleafContext
-                  ? 'Read the project live via Overleaf, then commit to GitHub'
-                  : 'Open the Overleaf project tab to enable live read-only pull'
-              }
-              style={{ marginTop: 8 }}
-            >
-              Live read-only pull from Overleaf
-            </button>
+            <>
+              <button
+                className="button full"
+                type="button"
+                onClick={onLiveReadOnly}
+                disabled={!overleafContext}
+                title={
+                  overleafContext
+                    ? 'Probe the Overleaf live channel; falls back to ZIP if docs cannot be read'
+                    : 'Open the Overleaf project tab to enable live read-only pull'
+                }
+                style={{ marginTop: 8 }}
+              >
+                Live read-only pull from Overleaf
+              </button>
+              <div className="muted" style={{ marginTop: 4, fontSize: 11 }}>
+                Status: the real-time document channel is not yet implemented,
+                so any project containing text documents will fail here. The
+                ZIP route above is the working path until the channel lands.
+              </div>
+            </>
           )}
-          {experimental.overleafWriteBackEnabled && (
-            <div className="muted" style={{ marginTop: 8 }}>
-              Write-back is enabled in options. After previewing a diff you can
-              choose specific text files to push back to Overleaf with explicit
-              confirmation.
-            </div>
-          )}
-          {experimental.localReplicaEnabled && (
-            <div className="muted" style={{ marginTop: 8 }}>
-              Local replica is enabled in options. Use the dedicated UI from the
-              options page to choose a local folder and compare it against
-              Overleaf.
+          {(experimental.overleafWriteBackEnabled || experimental.localReplicaEnabled) && (
+            <div className="muted" style={{ marginTop: 8, fontSize: 11 }}>
+              Note: write-back and local-replica modules are present in the
+              codebase but have no popup UI in this build. Enabling their
+              flags has no visible effect yet — they are slated for a future
+              release.
             </div>
           )}
         </section>
@@ -585,7 +594,13 @@ function PreviewView({
   onRestart: () => void;
 }): React.ReactElement {
   const summary: DiffSummary = useMemo(() => summarize(phase.diffs), [phase.diffs]);
-  const actionable = hasActionableChanges(phase.diffs, phase.includeDeletions);
+  // A snapshot with fetch warnings is potentially incomplete — files that
+  // failed to fetch will look like deletions in the diff. Block the
+  // deletion path entirely until the snapshot is clean. Adds and mods are
+  // still safe to commit.
+  const hasFetchWarnings = phase.snapshot.warnings.length > 0;
+  const effectiveIncludeDeletions = hasFetchWarnings ? false : phase.includeDeletions;
+  const actionable = hasActionableChanges(phase.diffs, effectiveIncludeDeletions);
   const deletions = phase.diffs.filter((d) => d.status === 'deleted');
 
   const setMessage = (msg: string) => onChange({ ...phase, commitMessage: msg });
@@ -609,9 +624,12 @@ function PreviewView({
         Source: <strong>{modeLabel(phase.snapshot.mode)}</strong>{' '}
         <code>{phase.snapshot.displayName}</code>
       </div>
-      {phase.snapshot.warnings.length > 0 && (
+      {hasFetchWarnings && (
         <div className="banner warning">
-          {phase.snapshot.warnings.length} warning{phase.snapshot.warnings.length === 1 ? '' : 's'} during fetch.
+          {phase.snapshot.warnings.length} warning{phase.snapshot.warnings.length === 1 ? '' : 's'} during fetch — snapshot may be incomplete.{' '}
+          <strong>Deletions are blocked</strong> to avoid removing files that
+          just failed to fetch. Use the ZIP route for a complete snapshot if
+          you also need to commit deletions.
           <ul style={{ margin: '6px 0 0 16px', padding: 0 }}>
             {phase.snapshot.warnings.slice(0, 5).map((w, i) => (
               <li key={i} style={{ fontSize: 11 }}>{w}</li>
@@ -647,11 +665,11 @@ function PreviewView({
           <DiffSection title="Added" status="added" items={filesByStatus.added} />
           <DiffSection title="Modified" status="modified" items={filesByStatus.modified} />
           <DiffSection
-            title={phase.includeDeletions ? 'Deleted (will be removed)' : 'Deleted (skipped)'}
+            title={effectiveIncludeDeletions ? 'Deleted (will be removed)' : 'Deleted (skipped)'}
             status="deleted"
             items={filesByStatus.deleted}
-            defaultOpen={phase.includeDeletions}
-            struckThrough={phase.includeDeletions}
+            defaultOpen={effectiveIncludeDeletions}
+            struckThrough={effectiveIncludeDeletions}
           />
           <DiffSection
             title="Unchanged"
@@ -666,16 +684,20 @@ function PreviewView({
         <label className="checkbox-row">
           <input
             type="checkbox"
-            checked={phase.includeDeletions}
+            disabled={hasFetchWarnings}
+            checked={effectiveIncludeDeletions}
             onChange={(e) => setIncludeDeletions(e.target.checked)}
           />
           <span>
             Include deletions ({deletions.length} file{deletions.length === 1 ? '' : 's'})
+            {hasFetchWarnings && (
+              <span className="muted"> — blocked while warnings exist</span>
+            )}
           </span>
         </label>
       )}
 
-      {phase.includeDeletions && deletions.length > 0 && (
+      {effectiveIncludeDeletions && deletions.length > 0 && (
         <div className="delete-warning">
           <strong>{deletions.length}</strong> file{deletions.length === 1 ? '' : 's'} will be
           permanently removed from <code>{config.branch}</code>
