@@ -1,96 +1,90 @@
 // Orchestrates the experimental live read-only pull.
 //
-// Flow:
-//   1. Confirm experimental flags are on (caller passes config).
-//   2. Load project metadata from the project page HTML.
-//   3. Open a real-time channel (probes Engine.IO; bails if the protocol is
-//      unrecognized so we never silently produce empty / wrong content).
-//   4. For each doc, fetch a snapshot via the real-time channel.
-//   5. For each static file, fetch bytes from the per-file endpoint.
-//   6. Normalize into ProjectFile[] using the same hashing/binary-detection
-//      pipeline the ZIP path uses, so downstream diff/commit code is
-//      identical.
+// Architecture: the popup runs in chrome-extension://… origin and cannot
+// open a WebSocket Overleaf will accept. So this module looks up the
+// active Overleaf project tab and dispatches a LIVE_FETCH_SNAPSHOT
+// message to the content script running on overleaf.com — the content
+// script holds the Socket.IO 0.9 client, runs joinProject/joinDoc,
+// gathers static files via REST, and returns a SerializedProjectFile[].
+// We deserialize and hand the result to the diff/commit pipeline.
 //
-// If any required step fails we throw a typed LiveSyncError so the popup
-// can show a clear "use ZIP route" message.
+// If the content script is missing (e.g. the user installed/updated the
+// extension after opening the Overleaf tab), LIVE_PING will fail and we
+// surface a clear "refresh the Overleaf tab" recovery action.
+//
+// AGPL-3.0. The protocol vocabulary is adapted from Overleaf Workshop.
 
 import type { ExperimentalConfig, ProjectFile } from '../../shared/types';
-import { COMMON_BINARY_EXTENSIONS, TEXT_EXTENSIONS } from '../../shared/constants';
-import { computeSha256 } from '../../diff/fileHasher';
 import {
-  fetchProjectMetadata,
-  flattenProjectTree,
-  type FlatProjectEntry,
-} from './overleafProjectLoader';
-import { openProjectConnection } from './overleafRealtimeClient';
-import { fetchDocSnapshot } from './overleafDocumentClient';
-import { fetchProjectFileBytes } from './overleafFileClient';
+  projectFileFromWire,
+  type BridgeRequest,
+  type BridgeResponse,
+  type LiveSnapshotResponseData,
+  BRIDGE_VERSION,
+} from './bridgeProtocol';
 import { LiveSyncError, type OverleafLiveSnapshot } from './types';
 
-function getExtension(path: string): string {
-  const base = path.split('/').pop() ?? path;
-  const idx = base.lastIndexOf('.');
-  if (idx < 0) return '';
-  return base.substring(idx).toLowerCase();
+const LIVE_FETCH_TIMEOUT_MS = 60_000;
+
+async function findOverleafTab(projectId: string): Promise<chrome.tabs.Tab | null> {
+  const tabs = await chrome.tabs.query({
+    url: [`https://www.overleaf.com/project/${projectId}*`],
+  });
+  if (tabs.length === 0) return null;
+  // Prefer the active tab if multiple match.
+  const active = tabs.find((t) => t.active);
+  return (active ?? tabs[0]) ?? null;
 }
 
-function looksBinary(bytes: Uint8Array): boolean {
-  const len = Math.min(bytes.length, 8192);
-  for (let i = 0; i < len; i++) if (bytes[i] === 0) return true;
-  return false;
-}
+function sendBridgeRequest<T>(
+  tabId: number,
+  request: BridgeRequest,
+  timeoutMs: number,
+): Promise<BridgeResponse<T>> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      resolve({
+        ok: false,
+        code: 'network',
+        message: `Live bridge did not respond within ${timeoutMs}ms.`,
+        recovery: 'Refresh the Overleaf tab and retry.',
+      });
+    }, timeoutMs);
 
-function detectBinary(path: string, bytes: Uint8Array): boolean {
-  const ext = getExtension(path);
-  if (TEXT_EXTENSIONS.has(ext)) return false;
-  if (COMMON_BINARY_EXTENSIONS.has(ext)) return true;
-  return looksBinary(bytes);
-}
-
-async function buildTextProjectFile(
-  path: string,
-  text: string,
-): Promise<ProjectFile> {
-  const enc = new TextEncoder();
-  const bytes = enc.encode(text);
-  const sha256 = await computeSha256(bytes);
-  return {
-    path,
-    content: bytes,
-    text,
-    encoding: 'utf-8',
-    sha256,
-    sizeBytes: bytes.byteLength,
-    isBinary: false,
-  };
-}
-
-async function buildBinaryProjectFile(
-  path: string,
-  bytes: Uint8Array,
-): Promise<ProjectFile> {
-  const isBinary = detectBinary(path, bytes);
-  const sha256 = await computeSha256(bytes);
-  if (isBinary) {
-    return {
-      path,
-      content: bytes,
-      encoding: 'base64',
-      sha256,
-      sizeBytes: bytes.byteLength,
-      isBinary: true,
-    };
-  }
-  const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
-  return {
-    path,
-    content: bytes,
-    text,
-    encoding: 'utf-8',
-    sha256,
-    sizeBytes: bytes.byteLength,
-    isBinary: false,
-  };
+    try {
+      chrome.tabs.sendMessage(tabId, request, (response) => {
+        clearTimeout(timer);
+        const lastError = chrome.runtime.lastError;
+        if (lastError) {
+          resolve({
+            ok: false,
+            code: 'protocol_unavailable',
+            message:
+              lastError.message ??
+              'No content script responded on the Overleaf tab. Refresh it.',
+            recovery: 'Refresh the Overleaf project tab so the content script reloads.',
+          });
+          return;
+        }
+        if (!response || typeof response !== 'object') {
+          resolve({
+            ok: false,
+            code: 'protocol_unavailable',
+            message: 'Live bridge returned an empty response.',
+          });
+          return;
+        }
+        resolve(response as BridgeResponse<T>);
+      });
+    } catch (e) {
+      clearTimeout(timer);
+      resolve({
+        ok: false,
+        code: 'unknown',
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
 }
 
 export async function fetchOverleafLiveSnapshot(
@@ -98,82 +92,60 @@ export async function fetchOverleafLiveSnapshot(
   experimental: ExperimentalConfig,
 ): Promise<OverleafLiveSnapshot> {
   if (!experimental.experimentalLiveSyncEnabled) {
-    throw new LiveSyncError(
-      'live_sync_disabled',
-      'Experimental live sync is disabled.',
-    );
+    throw new LiveSyncError('live_sync_disabled', 'Experimental live sync is disabled.');
   }
   if (!experimental.liveReadOnlyPullEnabled) {
-    throw new LiveSyncError(
-      'live_sync_disabled',
-      'Live read-only pull is disabled.',
-    );
+    throw new LiveSyncError('live_sync_disabled', 'Live read-only pull is disabled.');
   }
 
-  const metadata = await fetchProjectMetadata(projectId);
-  const entries = flattenProjectTree(metadata.rootFolder);
-  if (entries.length === 0) {
+  const tab = await findOverleafTab(projectId);
+  if (!tab || typeof tab.id !== 'number') {
     throw new LiveSyncError(
       'project_join_failed',
-      'Project contains no files we can read via the live channel.',
+      `No open Overleaf tab matches project ${projectId}.`,
+      'Open the Overleaf project tab and try again.',
     );
   }
 
-  await openProjectConnection(projectId);
-
-  const warnings: string[] = [];
-  const files: ProjectFile[] = [];
-
-  for (const entry of entries) {
-    try {
-      if (entry.kind === 'doc') {
-        const file = await readDoc(entry);
-        if (file) files.push(file);
-      } else {
-        const file = await readFile(projectId, entry);
-        if (file) files.push(file);
-      }
-    } catch (e) {
-      if (e instanceof LiveSyncError) {
-        // Doc reads will currently fail with `protocol_unavailable` in the
-        // stub realtime client. Surface that to the caller as a single
-        // typed error rather than silently producing an incomplete project.
-        if (e.code === 'protocol_unavailable' && entry.kind === 'doc') {
-          throw new LiveSyncError(
-            'protocol_unavailable',
-            'Live read-only pull is unavailable because Overleaf\'s live protocol could not be detected. Use ZIP snapshot instead.',
-            'Use the ZIP snapshot route as a fallback.',
-          );
-        }
-        warnings.push(`${entry.path}: ${e.message}`);
-      } else {
-        warnings.push(
-          `${entry.path}: ${e instanceof Error ? e.message : String(e)}`,
-        );
-      }
-    }
+  // Ping first to confirm the new bridge is loaded in this tab.
+  const ping = await sendBridgeRequest<{ onProjectPage: boolean }>(
+    tab.id,
+    { type: 'LIVE_PING', version: BRIDGE_VERSION },
+    5_000,
+  );
+  if (!ping.ok) {
+    throw new LiveSyncError(
+      'protocol_unavailable',
+      `Live bridge not reachable on the Overleaf tab: ${ping.message}`,
+      ping.recovery ?? 'Refresh the Overleaf tab so the updated content script loads.',
+    );
+  }
+  if (!ping.data.onProjectPage) {
+    throw new LiveSyncError(
+      'project_join_failed',
+      'The Overleaf tab is not currently on a project URL.',
+      'Open the project (https://www.overleaf.com/project/...) and try again.',
+    );
   }
 
+  const response = await sendBridgeRequest<LiveSnapshotResponseData>(
+    tab.id,
+    { type: 'LIVE_FETCH_SNAPSHOT', version: BRIDGE_VERSION, projectId },
+    LIVE_FETCH_TIMEOUT_MS,
+  );
+
+  if (!response.ok) {
+    throw new LiveSyncError(response.code, response.message, response.recovery);
+  }
+
+  const files: ProjectFile[] = response.data.files.map(projectFileFromWire);
   files.sort((a, b) => a.path.localeCompare(b.path));
 
   return {
-    projectId,
+    projectId: response.data.projectId,
     files,
     source: 'overleaf-live-readonly',
-    fetchedAt: new Date().toISOString(),
-    warnings,
+    fetchedAt: response.data.fetchedAt,
+    warnings: response.data.warnings,
   };
-}
-
-async function readDoc(entry: FlatProjectEntry): Promise<ProjectFile | null> {
-  const snapshot = await fetchDocSnapshot(entry.id);
-  return buildTextProjectFile(entry.path, snapshot.text);
-}
-
-async function readFile(
-  projectId: string,
-  entry: FlatProjectEntry,
-): Promise<ProjectFile | null> {
-  const bytes = await fetchProjectFileBytes(projectId, entry.id);
-  return buildBinaryProjectFile(entry.path, bytes);
 }

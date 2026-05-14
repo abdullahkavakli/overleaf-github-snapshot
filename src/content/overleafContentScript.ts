@@ -339,3 +339,48 @@ const observer = new MutationObserver(() => {
   }
 });
 observer.observe(document.documentElement, { childList: true, subtree: true });
+
+// ──────────────────────────────────────────────────────────────────────────
+// Live-snapshot bridge: handle LIVE_FETCH_SNAPSHOT messages from the popup.
+//
+// The popup itself cannot open a WebSocket to overleaf.com — its origin is
+// chrome-extension:// which the server rejects. The content script,
+// running on the project page, opens the WS from the page origin, runs
+// the joinProject/joinDoc dance, and returns a snapshot to the popup.
+// ──────────────────────────────────────────────────────────────────────────
+
+type AnyBridgeMessage = { type?: string; version?: number; projectId?: string };
+
+chrome.runtime.onMessage.addListener(
+  (message: AnyBridgeMessage, _sender, sendResponse) => {
+    if (!message || typeof message !== 'object') return false;
+    if (message.type === 'LIVE_PING') {
+      sendResponse({ ok: true, data: { onProjectPage: !!projectIdFromUrl() } });
+      return false;
+    }
+    if (message.type === 'LIVE_FETCH_SNAPSHOT') {
+      const projectId = typeof message.projectId === 'string' ? message.projectId : '';
+      if (!projectId) {
+        sendResponse({ ok: false, code: 'unknown', message: 'projectId missing in request' });
+        return false;
+      }
+      // Defer the heavy work to a dynamic import so the rest of the
+      // content script stays lightweight on every page-load.
+      void (async () => {
+        try {
+          const mod = await import('./liveBridgeHandler');
+          const result = await mod.handleLiveFetchSnapshot(projectId);
+          sendResponse(result);
+        } catch (e) {
+          sendResponse({
+            ok: false,
+            code: 'unknown',
+            message: e instanceof Error ? e.message : String(e),
+          });
+        }
+      })();
+      return true; // async response
+    }
+    return false;
+  },
+);

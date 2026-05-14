@@ -1,17 +1,30 @@
 // Discover Overleaf project metadata using the logged-in browser session.
 //
-// Implementation note: Overleaf's open-source server and the (AGPL) Overleaf
-// Workshop extension demonstrate that the project page bootstraps with a
-// `<meta name="ol-project_id">` tag and several `<meta name="ol-*">` blobs
-// that contain enough information to identify the project, the root folder
-// tree, and the root document. We avoid copying any AGPL source by
-// reimplementing only this minimal discovery — and we keep all parsing in
-// the browser context. We never touch cookies.
+// Strategy (in order of preference):
+//
+//   1. GET /project/<id>/entities  — JSON listing of every doc + fileRef in
+//      the project. This is the most stable surface and is what Overleaf
+//      Workshop (AGPL-3.0) uses. It returns a flat list rather than the
+//      nested folder tree, so we adopt that shape directly. CSRF is required.
+//
+//   2. Fall back to scraping <meta name="ol-csrfToken"> / <meta name="ol-project">
+//      out of the project page HTML — works on older Overleaf builds where
+//      the entities route isn't exposed or returns 404.
+//
+// Auth model: we rely on the browser's existing Overleaf session via
+// `credentials: 'include'`. This file never reads document.cookie and never
+// requests chrome.cookies. CSRF tokens come from the project-page HTML.
+//
+// This module is part of the AGPL-3.0 live-sync layer; its design is
+// derived from Overleaf Workshop's project entities flow.
 
 import { LiveSyncError, type LiveProjectFolder, type LiveProjectMetadata } from './types';
 
+// ──────────────────────────────────────────────────────────────────────────
+// CSRF + project-page bootstrap
+// ──────────────────────────────────────────────────────────────────────────
+
 function parseMetaJsonContent(html: string, name: string): unknown | null {
-  // Quote-aware regex for <meta name="..." content="...">
   const re = new RegExp(
     `<meta[^>]+name=["']${name.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}["'][^>]+content=["']([^"']*)["']`,
     'i',
@@ -37,9 +50,18 @@ function decodeHtmlEntities(value: string): string {
     .replace(/&gt;/g, '>');
 }
 
-export async function fetchProjectMetadata(
+export type ProjectBootstrap = {
+  projectId: string;
+  csrfToken: string;
+  // Populated when the project-page HTML still embeds the bootstrap blob.
+  // May be null on newer Overleaf builds — in that case we use the entities
+  // REST endpoint instead.
+  projectMeta: Record<string, unknown> | null;
+};
+
+export async function fetchProjectBootstrap(
   projectId: string,
-): Promise<LiveProjectMetadata> {
+): Promise<ProjectBootstrap> {
   if (!/^[a-zA-Z0-9]+$/.test(projectId)) {
     throw new LiveSyncError('unknown', `Invalid Overleaf project ID: ${projectId}`);
   }
@@ -85,8 +107,6 @@ export async function fetchProjectMetadata(
     );
   }
 
-  // Required: project ID. Stop short if we cannot even confirm we're on a
-  // project page.
   const idMeta = parseMetaJsonContent(html, 'ol-project_id') as string | null;
   if (idMeta && typeof idMeta === 'string' && idMeta !== projectId) {
     throw new LiveSyncError(
@@ -95,26 +115,147 @@ export async function fetchProjectMetadata(
     );
   }
 
-  const project = parseMetaJsonContent(html, 'ol-project') as Record<string, unknown> | null;
-  const rootFolderRaw =
-    (project && Array.isArray((project as { rootFolder?: unknown }).rootFolder)
-      ? ((project as { rootFolder?: unknown }).rootFolder as LiveProjectFolder[])
-      : null) ?? (parseMetaJsonContent(html, 'ol-rootFolder') as LiveProjectFolder[] | null);
-  const rootDoc_id =
-    (project && typeof (project as { rootDoc_id?: unknown }).rootDoc_id === 'string'
-      ? ((project as { rootDoc_id?: string }).rootDoc_id as string)
-      : null) ?? (parseMetaJsonContent(html, 'ol-rootDoc_id') as string | null);
-  const name =
-    (project && typeof (project as { name?: unknown }).name === 'string'
-      ? ((project as { name?: string }).name as string)
-      : null) ?? (parseMetaJsonContent(html, 'ol-projectName') as string | null);
-
-  if (!rootFolderRaw) {
-    // No meta blob we recognize. Bail with a clear protocol-unavailable
-    // error so the caller falls back to ZIP.
+  const csrfToken = parseMetaJsonContent(html, 'ol-csrfToken') as string | null;
+  if (!csrfToken || typeof csrfToken !== 'string') {
     throw new LiveSyncError(
       'protocol_unavailable',
-      'Overleaf project metadata could not be detected from the project page. The HTML layout may have changed.',
+      'CSRF token not found on Overleaf project page (no <meta name="ol-csrfToken">). Project page layout may have changed.',
+    );
+  }
+
+  const projectMeta = parseMetaJsonContent(html, 'ol-project') as
+    | Record<string, unknown>
+    | null;
+
+  return { projectId, csrfToken, projectMeta };
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// REST: /project/<id>/entities — flat list of every doc + file in project
+// ──────────────────────────────────────────────────────────────────────────
+
+export type ProjectEntity = {
+  path: string;
+  type: 'doc' | 'file';
+};
+
+export type ProjectEntitiesResponse = {
+  projectId: string;
+  entities: ProjectEntity[];
+};
+
+// Overleaf's /project/:id/entities returns a JSON object shaped roughly:
+//   { project_id: "...", entities: [ { path: "/main.tex", type: "doc" }, ... ] }
+// We normalise here so the rest of the code doesn't care about the exact
+// field names.
+export async function fetchProjectEntities(
+  bootstrap: ProjectBootstrap,
+): Promise<ProjectEntitiesResponse> {
+  const url = `https://www.overleaf.com/project/${encodeURIComponent(bootstrap.projectId)}/entities`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'GET',
+      credentials: 'include',
+      redirect: 'follow',
+      cache: 'no-store',
+      headers: {
+        Accept: 'application/json',
+        'X-Csrf-Token': bootstrap.csrfToken,
+      },
+    });
+  } catch (e) {
+    throw new LiveSyncError(
+      'network',
+      `Failed to load project entities: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  if (response.status === 401) {
+    throw new LiveSyncError('not_logged_in', 'You are not signed in to Overleaf.');
+  }
+  if (response.status === 403) {
+    throw new LiveSyncError('forbidden', 'Overleaf refused access to project entities.');
+  }
+  if (response.status === 404) {
+    throw new LiveSyncError(
+      'protocol_unavailable',
+      'Overleaf /entities endpoint not found on this build — falling back to project-page metadata.',
+    );
+  }
+  if (!response.ok) {
+    throw new LiveSyncError(
+      'protocol_unavailable',
+      `Project entities request returned HTTP ${response.status}.`,
+    );
+  }
+
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch (e) {
+    throw new LiveSyncError(
+      'protocol_unavailable',
+      `Project entities response was not JSON: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+
+  const rawEntities = (body as { entities?: unknown })?.entities;
+  if (!Array.isArray(rawEntities)) {
+    throw new LiveSyncError(
+      'protocol_unavailable',
+      'Project entities response shape was unexpected (missing "entities" array).',
+    );
+  }
+
+  const entities: ProjectEntity[] = [];
+  for (const raw of rawEntities) {
+    if (!raw || typeof raw !== 'object') continue;
+    const o = raw as { path?: unknown; type?: unknown };
+    if (typeof o.path !== 'string' || typeof o.type !== 'string') continue;
+    if (o.type !== 'doc' && o.type !== 'file') continue;
+    // Strip the leading "/" Overleaf uses so paths match the ZIP path
+    // shape downstream (project-relative, no leading slash).
+    const cleanPath = o.path.replace(/^\/+/, '');
+    if (!cleanPath) continue;
+    entities.push({ path: cleanPath, type: o.type });
+  }
+
+  if (entities.length === 0) {
+    throw new LiveSyncError(
+      'project_join_failed',
+      'Project entities response contained no usable doc/file entries.',
+    );
+  }
+
+  return { projectId: bootstrap.projectId, entities };
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Bootstrap-tree fallback (older Overleaf builds)
+// ──────────────────────────────────────────────────────────────────────────
+
+export async function fetchProjectMetadata(
+  projectId: string,
+): Promise<LiveProjectMetadata> {
+  const bootstrap = await fetchProjectBootstrap(projectId);
+  const project = bootstrap.projectMeta;
+  const rootFolderRaw =
+    project && Array.isArray((project as { rootFolder?: unknown }).rootFolder)
+      ? ((project as { rootFolder?: unknown }).rootFolder as LiveProjectFolder[])
+      : null;
+  const rootDoc_id =
+    project && typeof (project as { rootDoc_id?: unknown }).rootDoc_id === 'string'
+      ? ((project as { rootDoc_id?: string }).rootDoc_id as string)
+      : null;
+  const name =
+    project && typeof (project as { name?: unknown }).name === 'string'
+      ? ((project as { name?: string }).name as string)
+      : null;
+
+  if (!rootFolderRaw) {
+    throw new LiveSyncError(
+      'protocol_unavailable',
+      'Project bootstrap blob not found on the project page. Use the entities REST endpoint instead.',
     );
   }
 
@@ -127,7 +268,9 @@ export async function fetchProjectMetadata(
 }
 
 export type FlatProjectEntry = {
-  id: string;
+  // For docs from /entities, id is unknown until joinProject runs; we
+  // populate it lazily once the realtime channel returns the project tree.
+  id: string | null;
   path: string;
   kind: 'doc' | 'file';
 };
@@ -137,7 +280,6 @@ export function flattenProjectTree(
 ): FlatProjectEntry[] {
   const out: FlatProjectEntry[] = [];
   if (!rootFolder || rootFolder.length === 0) return out;
-  // Top-level folder is the (unnamed) root in Overleaf; descend into it.
   for (const folder of rootFolder) {
     walkFolder(folder, '', out);
   }
@@ -154,26 +296,19 @@ function walkFolder(
     : folder.name && folder.name.length > 0
       ? folder.name
       : prefix;
-  // The synthetic root folder Overleaf returns has name "rootFolder" and
-  // empty name in some payloads; treat both as empty path.
-  const here2 =
-    folder.name === 'rootFolder' || !folder.name ? prefix : here;
+  const here2 = folder.name === 'rootFolder' || !folder.name ? prefix : here;
 
   for (const doc of folder.docs ?? []) {
-    out.push({
-      id: doc._id,
-      path: here2 ? `${here2}/${doc.name}` : doc.name,
-      kind: 'doc',
-    });
+    out.push({ id: doc._id, path: here2 ? `${here2}/${doc.name}` : doc.name, kind: 'doc' });
   }
   for (const file of folder.fileRefs ?? []) {
-    out.push({
-      id: file._id,
-      path: here2 ? `${here2}/${file.name}` : file.name,
-      kind: 'file',
-    });
+    out.push({ id: file._id, path: here2 ? `${here2}/${file.name}` : file.name, kind: 'file' });
   }
   for (const sub of folder.folders ?? []) {
     walkFolder(sub, here2, out);
   }
+}
+
+export function entitiesToFlatTree(entities: ProjectEntity[]): FlatProjectEntry[] {
+  return entities.map((e) => ({ id: null, path: e.path, kind: e.type }));
 }

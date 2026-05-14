@@ -105,7 +105,7 @@ export async function writeSelectedFilesBackToOverleaf(
   const entries = flattenProjectTree(metadata.rootFolder);
   const docIdByPath = new Map<string, string>();
   for (const entry of entries) {
-    if (entry.kind === 'doc') docIdByPath.set(entry.path, entry.id);
+    if (entry.kind === 'doc' && entry.id) docIdByPath.set(entry.path, entry.id);
   }
 
   for (const candidate of allowed) {
