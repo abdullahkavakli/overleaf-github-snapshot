@@ -1,7 +1,7 @@
 {
   "name": "overleaf-snapshot-to-github",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "Chrome extension that commits Overleaf source ZIP snapshots to a GitHub repository.",
   "license": "MIT",
