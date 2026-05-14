@@ -46,10 +46,10 @@ Manual ZIP upload is **always available**, even if automatic fetch fails. The er
 
 ### C. Experimental — Overleaf Live Sync (off by default)
 
-The options page contains an **Experimental Overleaf Live Sync** section, fully disabled by default. The status of each capability as of this release:
+The options page contains an **Experimental Overleaf Live Sync** section, fully disabled by default. Capabilities as of this release:
 
-- **Live read-only pull** *(probe only)* — the popup button exists and reaches the Overleaf real-time handshake, but the document channel itself is a stub: any project containing text documents will fail with `protocol_unavailable` and the popup falls back to ZIP. Useful for confirming the handshake works on your build; not yet useful for fetching real content. A working document channel is slated for a future release.
-- **Explicit Overleaf write-back** *(module only — no UI)* — the code path (`writeSelectedFilesBackToOverleaf`, conflict detector, OT helper, backup gate, typed confirmation contract) is implemented and exported, but there is no popup or options UI that calls it in this build. Toggling the option has no visible effect yet. When the live channel lands, this is the next surface to wire up.
+- **Live read-only pull** *(alpha — implemented but not yet battle-tested)* — pulls every doc and file in the project from Overleaf's live session, runs the same diff/commit pipeline as the ZIP route. **Architecture**: the popup messages the overleaf.com content script via `chrome.tabs.sendMessage`; the content script opens a Socket.IO 0.9 connection from the page origin (`www.overleaf.com`), runs `joinProject` to enumerate the file tree, `joinDoc` for each editable document, and `GET /project/<id>/file/<fileId>` for each static file. The session/CSRF flow uses the browser's existing Overleaf session via `credentials: "include"` and reads the CSRF token from the project page's `<meta name="ol-csrfToken">`. **The extension never reads `document.cookie` and never requests the `chrome.cookies` permission.** Live read-only is gated as alpha because the Overleaf real-time protocol is undocumented and can change without notice. The stable ZIP route remains the durable path.
+- **Explicit Overleaf write-back** *(module only — no UI)* — the code path (`writeSelectedFilesBackToOverleaf`, conflict detector, OT helper, backup gate, typed confirmation contract) is implemented and exported, but there is no popup or options UI that calls it in this build. We deliberately ship live read-only first; write-back lands only after read-only has proven reliable on real projects.
 - **Local replica prototype** *(module only — no UI)* — `localReplicaManager`, `localFolderAccess`, and the three-way `localConflictDetector` are implemented, but there is no UI that picks a folder, compares, or pulls. The File System Access API requirement is real for when the UI lands. See "Local replica prototype" below for the planned shape.
 
 Each experimental capability still has its own settings toggle, so future revisions can wire the UI without changing storage. Settings include:
@@ -59,7 +59,9 @@ Each experimental capability still has its own settings toggle, so future revisi
 - Allow binary file write-back (default OFF)
 - Allowed write-back extensions (default `.tex`, `.bib`, `.cls`, `.sty`, `.bst`, `.md`, `.txt`)
 
-> **Important.** Experimental live sync depends on Overleaf internals that may break without warning. The stable ZIP route is always available as a fallback. Even when the live read-only pull only fetches a partial snapshot, the popup blocks deletion-style commits until warnings clear, so partial fetches cannot silently remove files from your GitHub branch.
+> **Important.** Live read-only depends on Overleaf's internal Socket.IO 0.9 protocol staying compatible. The stable ZIP route is always available as a fallback. If live read-only returns a snapshot with fetch warnings, the popup blocks deletion-style commits until warnings clear, so partial fetches cannot silently remove files from your GitHub branch.
+
+> **Tip.** If you install or update this extension while an Overleaf project tab is already open, **refresh the Overleaf tab once** so the new content-script bridge is loaded. The popup will tell you if the bridge isn't reachable.
 
 ## Local replica prototype (modules only — no UI yet)
 
@@ -244,8 +246,9 @@ Vite watches sources and rebuilds `dist/`. Reload the extension in `chrome://ext
 
 1. Open **Options** and enable **Experimental Overleaf Live Sync** plus the specific capabilities you want.
 2. In the popup, the **Experimental Live Sync** section becomes visible.
-3. Click **Live read-only pull**. In this build the real-time document channel is a stub, so any project containing text documents will fail with `protocol_unavailable` and you should fall back to the ZIP route. The popup also blocks deletion-style commits while the snapshot has any fetch warnings, so a partial live snapshot cannot remove real files from GitHub.
-4. **Write-back** and **local replica** are **not user-runnable yet in this build**. The settings toggles persist for future revisions but no popup or options UI calls those modules. Do not look for write-back / local-replica buttons — none exist yet.
+3. With an Overleaf project tab open and signed in, click **Live read-only pull**. The popup messages the content script on that tab; the content script opens a Socket.IO 0.9 channel to Overleaf, runs `joinProject` + `joinDoc` for every text doc, fetches static files over REST, and returns a complete snapshot to the diff/commit pipeline. If any doc or file fails, the snapshot carries warnings and the popup blocks deletion-style commits as a safety net.
+4. If you installed or updated the extension while the Overleaf tab was already open, **refresh that tab once** so the new content-script bridge loads. The popup will tell you with a typed error if the bridge isn't reachable.
+5. **Write-back** and **local replica** are still **not user-runnable in this build**. The settings toggles persist for future revisions; the modules exist; but no popup or options UI calls them yet. Write-back will be wired only after live read-only has proven reliable.
 
 ## Manual testing checklist
 
@@ -256,13 +259,14 @@ User-runnable surfaces in this build:
 3. **Overleaf tab, signed out** → automatic route fails with `not_logged_in`; manual fallback remains visible.
 4. **ZIP endpoint changed** → typed `endpoint_changed`/`not_zip` error; manual fallback remains visible.
 5. **Experimental disabled** → no live sync UI visible.
-6. **Experimental enabled** → live read-only button visible (disabled until Overleaf tab is active); the status hint under the button states the doc channel is a stub.
-7. **Live read-only on a typical project** → fails with `protocol_unavailable`; ZIP mode still works.
+6. **Experimental enabled, Overleaf tab open and signed in** → live read-only pull connects via the content-script bridge, joinProject enumerates the tree, joinDoc reads every text document, REST fetches every static file, the popup shows the diff and commits to GitHub.
+7. **Experimental enabled but Overleaf tab needs refresh** (after extension install/update) → popup shows a typed `protocol_unavailable` error with recovery: *Refresh the Overleaf tab so the bridge loads.*
 8. **Live snapshot with fetch warnings** → deletion checkbox is disabled, deletions banner is suppressed, commit handler enforces `includeDeletions=false` as defense in depth.
+9. **Live read-only fails** → ZIP mode still works (use the green primary button instead).
 
 Not user-runnable yet (no UI in this build — modules exist but are not invoked):
 
-- **Write-back** — `writeSelectedFilesBackToOverleaf` exists with conflict detector, OT helper, backup gate, and typed-confirmation contract, but no UI calls it.
+- **Write-back** — `writeSelectedFilesBackToOverleaf` exists with conflict detector, OT helper, backup gate, and typed-confirmation contract, but no UI calls it. Will be wired only after live read-only has proven reliable.
 - **Local replica** — `localReplicaManager` and its three-way conflict detector exist, but no folder picker or compare UI is wired up.
 
 These are slated for a future release.

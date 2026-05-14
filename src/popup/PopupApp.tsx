@@ -520,7 +520,7 @@ function ReadyView({
                 disabled={!overleafContext}
                 title={
                   overleafContext
-                    ? 'Probe the Overleaf live channel; falls back to ZIP if docs cannot be read'
+                    ? 'Pull docs + files via the live Overleaf session, then commit to GitHub'
                     : 'Open the Overleaf project tab to enable live read-only pull'
                 }
                 style={{ marginTop: 8 }}
@@ -528,9 +528,12 @@ function ReadyView({
                 Live read-only pull from Overleaf
               </button>
               <div className="muted" style={{ marginTop: 4, fontSize: 11 }}>
-                Status: the real-time document channel is not yet implemented,
-                so any project containing text documents will fail here. The
-                ZIP route above is the working path until the channel lands.
+                Status: implemented via a content-script bridge on the Overleaf
+                project tab (Socket.IO 0.9 / joinProject / joinDoc). Depends on
+                Overleaf's live protocol staying stable; if anything moves you
+                will see a typed error and the ZIP route remains available.
+                If you just installed/updated the extension, refresh the
+                Overleaf tab once so the bridge can load.
               </div>
             </>
           )}
