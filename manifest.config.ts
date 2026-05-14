@@ -8,6 +8,15 @@ const icons = {
   '128': 'icons/icon-128.png',
 };
 
+// Chrome's manifest_version field must be 1–4 dot-separated integers
+// (e.g. "0.4.0"). SemVer pre-release strings like "0.4.0-alpha.1" are
+// rejected by Chrome. We strip any "-…" suffix here so the npm/git side
+// keeps the full SemVer identifier while the Chrome runtime sees a
+// numeric-only version. version_name preserves the human-readable form
+// inside chrome://extensions so alpha builds are still distinguishable.
+const semver = packageJson.version;
+const chromeVersion = semver.replace(/-.+$/, '');
+
 // The build-time source of truth for the extension manifest.
 // At source root we intentionally keep NO manifest.json: it would point at
 // TypeScript files (which Chrome cannot load), so users would see confusing
@@ -17,9 +26,10 @@ const icons = {
 export default defineManifest({
   manifest_version: 3,
   name: 'Overleaf Snapshot to GitHub',
-  version: packageJson.version,
+  version: chromeVersion,
+  version_name: semver !== chromeVersion ? semver : undefined,
   description:
-    'Commit Overleaf source ZIP snapshots to a GitHub repository. One-way snapshot, no Overleaf Premium needed.',
+    'Commit Overleaf project snapshots to GitHub; optional live read-only sync via Overleaf\'s session.',
   icons,
   permissions: ['storage', 'activeTab'],
   host_permissions: [
