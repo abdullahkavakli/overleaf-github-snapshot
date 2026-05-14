@@ -3,13 +3,19 @@ import type {
   CommitResult,
   DiffItem,
   DiffSummary,
+  ExperimentalConfig,
   GitHubTreeItem,
   ProjectFile,
   RepoConfig,
 } from '../shared/types';
-import { getRepoConfig, isConfigured } from '../storage/extensionStorage';
+import { DEFAULT_EXPERIMENTAL_CONFIG } from '../shared/constants';
+import {
+  getExperimentalConfig,
+  getRepoConfig,
+  isConfigured,
+} from '../storage/extensionStorage';
 import { getToken } from '../github/auth';
-import { readZipFromFile, ZipError } from '../zip/zipReader';
+import { ZipError } from '../zip/zipReader';
 import {
   GitHubApiError,
   GitHubClient,
@@ -17,16 +23,30 @@ import {
 } from '../github/githubClient';
 import { computeDiff, hasActionableChanges, summarize } from '../diff/diffEngine';
 import { CommitError, createCommit, type CommitProgress } from '../github/commitEngine';
+import {
+  getActiveOverleafProjectContext,
+  type OverleafProjectContext,
+} from '../overleaf/overleafContext';
+import {
+  OverleafZipFetchError,
+  formatOverleafZipFetchError,
+} from '../overleaf/overleafZipClient';
+import {
+  sourceFromManualZip,
+  sourceFromOverleafZipRoute,
+} from '../sources/sourceManager';
+import type { SourceMode, SourceSnapshot } from '../sources/sourceTypes';
+import { fetchOverleafLiveSnapshot } from '../overleaf/live/liveSyncManager';
+import { LiveSyncError, recoveryActionForLiveSyncError } from '../overleaf/live/types';
 
 type Phase =
   | { kind: 'loading' }
   | { kind: 'unconfigured'; reason: 'no-token' | 'no-repo' | 'both' }
   | { kind: 'ready' }
-  | { kind: 'analyzing'; fileName: string; step: string }
+  | { kind: 'analyzing'; label: string; step: string }
   | {
       kind: 'preview';
-      fileName: string;
-      zipFiles: ProjectFile[];
+      snapshot: SourceSnapshot;
       diffs: DiffItem[];
       includeDeletions: boolean;
       commitMessage: string;
@@ -34,23 +54,35 @@ type Phase =
       baseTreeSha: string;
     }
   | { kind: 'committing'; progress: string }
-  | { kind: 'success'; result: CommitResult }
-  | { kind: 'error'; message: string };
+  | { kind: 'success'; result: CommitResult; manualFallbackHint?: boolean }
+  | { kind: 'error'; message: string; allowManualFallback: boolean; recovery?: string };
 
 const DEFAULT_COMMIT_MESSAGE = 'Sync Overleaf project';
 
 export function Popup(): React.ReactElement {
   const [config, setConfig] = useState<RepoConfig | null>(null);
   const [token, setToken] = useState<string | null>(null);
+  const [experimental, setExperimental] = useState<ExperimentalConfig>(
+    DEFAULT_EXPERIMENTAL_CONFIG,
+  );
+  const [overleafContext, setOverleafContext] =
+    useState<OverleafProjectContext | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     void (async () => {
       try {
-        const [c, t] = await Promise.all([getRepoConfig(), getToken()]);
+        const [c, t, e, ctx] = await Promise.all([
+          getRepoConfig(),
+          getToken(),
+          getExperimentalConfig(),
+          getActiveOverleafProjectContext(),
+        ]);
         setConfig(c);
         setToken(t);
+        setExperimental(e);
+        setOverleafContext(ctx);
         if (!t && !isConfigured(c)) {
           setPhase({ kind: 'unconfigured', reason: 'both' });
         } else if (!t) {
@@ -61,7 +93,11 @@ export function Popup(): React.ReactElement {
           setPhase({ kind: 'ready' });
         }
       } catch (e) {
-        setPhase({ kind: 'error', message: e instanceof Error ? e.message : String(e) });
+        setPhase({
+          kind: 'error',
+          message: e instanceof Error ? e.message : String(e),
+          allowManualFallback: true,
+        });
       }
     })();
   }, []);
@@ -77,20 +113,25 @@ export function Popup(): React.ReactElement {
     if (fileInputRef.current) fileInputRef.current.value = '';
   }, []);
 
-  const handleFile = useCallback(
-    async (file: File) => {
+  const beginPreview = useCallback(
+    async (snapshot: SourceSnapshot) => {
       if (!config || !token) return;
-      setPhase({ kind: 'analyzing', fileName: file.name, step: 'Reading ZIP…' });
       try {
-        const zipFiles = await readZipFromFile(file);
-        setPhase({ kind: 'analyzing', fileName: file.name, step: 'Fetching GitHub state…' });
+        setPhase({
+          kind: 'analyzing',
+          label: snapshot.displayName,
+          step: 'Fetching GitHub state…',
+        });
         const { baseCommitSha, baseTreeSha, treeItems } = await fetchGitHubTree(token, config);
-        setPhase({ kind: 'analyzing', fileName: file.name, step: 'Computing diff…' });
-        const diffs = await computeDiff(zipFiles, treeItems, config);
+        setPhase({
+          kind: 'analyzing',
+          label: snapshot.displayName,
+          step: 'Computing diff…',
+        });
+        const diffs = await computeDiff(snapshot.files, treeItems, config);
         setPhase({
           kind: 'preview',
-          fileName: file.name,
-          zipFiles,
+          snapshot,
           diffs,
           includeDeletions: config.includeDeletions,
           commitMessage: DEFAULT_COMMIT_MESSAGE,
@@ -99,21 +140,111 @@ export function Popup(): React.ReactElement {
         });
       } catch (e) {
         let msg: string;
-        if (e instanceof ZipError) msg = e.message;
-        else if (e instanceof GitHubApiError) msg = formatGitHubError(e);
+        if (e instanceof GitHubApiError) msg = formatGitHubError(e);
         else msg = e instanceof Error ? e.message : String(e);
-        setPhase({ kind: 'error', message: msg });
+        setPhase({
+          kind: 'error',
+          message: msg,
+          allowManualFallback: snapshot.mode !== 'manual-zip',
+        });
       }
     },
     [config, token],
   );
 
+  const handleAutomaticFetch = useCallback(async () => {
+    if (!overleafContext || !config || !token) return;
+    setPhase({
+      kind: 'analyzing',
+      label: `Overleaf project ${overleafContext.projectId}`,
+      step: 'Fetching Overleaf source ZIP…',
+    });
+    try {
+      const snapshot = await sourceFromOverleafZipRoute(overleafContext.projectId);
+      await beginPreview(snapshot);
+    } catch (e) {
+      let message: string;
+      if (e instanceof OverleafZipFetchError) {
+        message = `${formatOverleafZipFetchError(e)} Automatic Overleaf export failed. You can still download the source ZIP manually from Overleaf and select it here.`;
+      } else if (e instanceof ZipError) {
+        message = `${e.message} Automatic Overleaf export failed. You can still download the source ZIP manually from Overleaf and select it here.`;
+      } else {
+        message = `${e instanceof Error ? e.message : String(e)} Automatic Overleaf export failed. You can still download the source ZIP manually from Overleaf and select it here.`;
+      }
+      setPhase({
+        kind: 'error',
+        message,
+        allowManualFallback: true,
+      });
+    }
+  }, [overleafContext, config, token, beginPreview]);
+
+  const handleLiveReadOnly = useCallback(async () => {
+    if (!overleafContext || !config || !token) return;
+    setPhase({
+      kind: 'analyzing',
+      label: `Overleaf project ${overleafContext.projectId}`,
+      step: 'Connecting to Overleaf live session…',
+    });
+    try {
+      const live = await fetchOverleafLiveSnapshot(
+        overleafContext.projectId,
+        experimental,
+      );
+      const snapshot: SourceSnapshot = {
+        mode: 'overleaf-live-readonly',
+        projectId: live.projectId,
+        displayName: `Live ${live.projectId}`,
+        files: live.files,
+        warnings: live.warnings,
+        metadata: { fetchedAt: live.fetchedAt },
+      };
+      await beginPreview(snapshot);
+    } catch (e) {
+      let message: string;
+      let recovery: string | undefined;
+      if (e instanceof LiveSyncError) {
+        message = e.message;
+        recovery = e.recovery ?? recoveryActionForLiveSyncError(e.code);
+      } else {
+        message = e instanceof Error ? e.message : String(e);
+      }
+      setPhase({
+        kind: 'error',
+        message,
+        recovery,
+        allowManualFallback: true,
+      });
+    }
+  }, [overleafContext, config, token, experimental, beginPreview]);
+
+  const handleManualFile = useCallback(
+    async (file: File) => {
+      if (!config || !token) return;
+      setPhase({ kind: 'analyzing', label: file.name, step: 'Reading ZIP…' });
+      try {
+        const snapshot = await sourceFromManualZip(file);
+        await beginPreview(snapshot);
+      } catch (e) {
+        let msg: string;
+        if (e instanceof ZipError) msg = e.message;
+        else msg = e instanceof Error ? e.message : String(e);
+        setPhase({
+          kind: 'error',
+          message: msg,
+          allowManualFallback: false,
+        });
+      }
+    },
+    [config, token, beginPreview],
+  );
+
   const onFileChange = useCallback(
     (ev: React.ChangeEvent<HTMLInputElement>) => {
       const file = ev.target.files?.[0];
-      if (file) void handleFile(file);
+      if (file) void handleManualFile(file);
     },
-    [handleFile],
+    [handleManualFile],
   );
 
   const onCommit = useCallback(async () => {
@@ -131,7 +262,7 @@ export function Popup(): React.ReactElement {
       const result = await createCommit(
         token,
         effectiveConfig,
-        phase.zipFiles,
+        phase.snapshot.files,
         phase.diffs,
         phase.commitMessage.trim(),
         { commitSha: phase.baseCommitSha, treeSha: phase.baseTreeSha },
@@ -143,7 +274,7 @@ export function Popup(): React.ReactElement {
       if (e instanceof CommitError) msg = e.message;
       else if (e instanceof GitHubApiError) msg = formatGitHubError(e);
       else msg = e instanceof Error ? e.message : String(e);
-      setPhase({ kind: 'error', message: msg });
+      setPhase({ kind: 'error', message: msg, allowManualFallback: false });
     }
   }, [phase, config, token]);
 
@@ -173,7 +304,15 @@ export function Popup(): React.ReactElement {
         )}
 
         {phase.kind === 'ready' && config && (
-          <ReadyView config={config} onChooseFile={onFileChange} inputRef={fileInputRef} />
+          <ReadyView
+            config={config}
+            overleafContext={overleafContext}
+            experimental={experimental}
+            onAutomatic={handleAutomaticFetch}
+            onLiveReadOnly={handleLiveReadOnly}
+            onChooseFile={onFileChange}
+            inputRef={fileInputRef}
+          />
         )}
 
         {phase.kind === 'analyzing' && (
@@ -181,7 +320,7 @@ export function Popup(): React.ReactElement {
             <span className="spinner" aria-hidden="true" />
             {phase.step}
             <div className="muted" style={{ marginTop: 4 }}>
-              {phase.fileName}
+              {phase.label}
             </div>
           </div>
         )}
@@ -205,7 +344,16 @@ export function Popup(): React.ReactElement {
 
         {phase.kind === 'success' && <SuccessView result={phase.result} onAnother={restart} />}
 
-        {phase.kind === 'error' && <ErrorView message={phase.message} onRetry={restart} />}
+        {phase.kind === 'error' && (
+          <ErrorView
+            message={phase.message}
+            recovery={phase.recovery}
+            allowManualFallback={phase.allowManualFallback}
+            onRetry={restart}
+            onChooseFile={onFileChange}
+            inputRef={fileInputRef}
+          />
+        )}
       </div>
     </div>
   );
@@ -276,30 +424,117 @@ function UnconfiguredView({
 
 function ReadyView({
   config,
+  overleafContext,
+  experimental,
+  onAutomatic,
+  onLiveReadOnly,
   onChooseFile,
   inputRef,
 }: {
   config: RepoConfig;
+  overleafContext: OverleafProjectContext | null;
+  experimental: ExperimentalConfig;
+  onAutomatic: () => void;
+  onLiveReadOnly: () => void;
   onChooseFile: (ev: React.ChangeEvent<HTMLInputElement>) => void;
   inputRef: React.RefObject<HTMLInputElement>;
 }): React.ReactElement {
   return (
     <>
       <RepoSummary config={config} />
-      <div className="banner warning">
-        Download the Overleaf <strong>Source</strong> ZIP from <em>Menu → Source</em>, then select
-        it below.
-      </div>
-      <div className="file-input">
-        <label htmlFor="zipInput">Overleaf source ZIP</label>
-        <input
-          id="zipInput"
-          ref={inputRef}
-          type="file"
-          accept=".zip,application/zip,application/x-zip-compressed"
-          onChange={onChooseFile}
-        />
-      </div>
+
+      <section className="mode-section">
+        <h2 className="mode-title">
+          <span className="mode-badge stable">Stable</span>
+          Commit Overleaf snapshot to GitHub
+        </h2>
+        {overleafContext ? (
+          <>
+            <div className="muted">
+              Current Overleaf project detected.<br />
+              Project ID: <code>{overleafContext.projectId}</code>
+            </div>
+            <button
+              className="button primary full"
+              type="button"
+              onClick={onAutomatic}
+              style={{ marginTop: 8 }}
+            >
+              Fetch from current Overleaf project
+            </button>
+          </>
+        ) : (
+          <div className="muted">
+            No active Overleaf project tab detected. Open an Overleaf project tab
+            (https://www.overleaf.com/project/…) to use automatic snapshot, or
+            upload a ZIP below.
+          </div>
+        )}
+      </section>
+
+      <section className="mode-section">
+        <h2 className="mode-title">
+          <span className="mode-badge fallback">Fallback</span>
+          Manual ZIP upload
+        </h2>
+        <div className="muted">
+          Download the Overleaf <strong>Source</strong> ZIP from{' '}
+          <em>Menu → Source</em>, then select it below.
+        </div>
+        <div className="file-input" style={{ marginTop: 6 }}>
+          <label htmlFor="zipInput">Overleaf source ZIP</label>
+          <input
+            id="zipInput"
+            ref={inputRef}
+            type="file"
+            accept=".zip,application/zip,application/x-zip-compressed"
+            onChange={onChooseFile}
+          />
+        </div>
+      </section>
+
+      {experimental.experimentalLiveSyncEnabled && (
+        <section className="mode-section experimental">
+          <h2 className="mode-title">
+            <span className="mode-badge experimental">Experimental</span>
+            Live Sync
+          </h2>
+          <div className="muted">
+            These features depend on Overleaf internals that may break without
+            warning. The ZIP route above is always available as a fallback.
+          </div>
+          {experimental.liveReadOnlyPullEnabled && (
+            <button
+              className="button full"
+              type="button"
+              onClick={onLiveReadOnly}
+              disabled={!overleafContext}
+              title={
+                overleafContext
+                  ? 'Read the project live via Overleaf, then commit to GitHub'
+                  : 'Open the Overleaf project tab to enable live read-only pull'
+              }
+              style={{ marginTop: 8 }}
+            >
+              Live read-only pull from Overleaf
+            </button>
+          )}
+          {experimental.overleafWriteBackEnabled && (
+            <div className="muted" style={{ marginTop: 8 }}>
+              Write-back is enabled in options. After previewing a diff you can
+              choose specific text files to push back to Overleaf with explicit
+              confirmation.
+            </div>
+          )}
+          {experimental.localReplicaEnabled && (
+            <div className="muted" style={{ marginTop: 8 }}>
+              Local replica is enabled in options. Use the dedicated UI from the
+              options page to choose a local folder and compare it against
+              Overleaf.
+            </div>
+          )}
+        </section>
+      )}
     </>
   );
 }
@@ -321,6 +556,19 @@ function RepoSummary({ config }: { config: RepoConfig }): React.ReactElement {
       ) : null}
     </div>
   );
+}
+
+function modeLabel(mode: SourceMode): string {
+  switch (mode) {
+    case 'manual-zip':
+      return 'Manual ZIP';
+    case 'overleaf-zip-route':
+      return 'Automatic ZIP';
+    case 'overleaf-live-readonly':
+      return 'Live read-only';
+    case 'local-replica':
+      return 'Local replica';
+  }
 }
 
 function PreviewView({
@@ -358,8 +606,24 @@ function PreviewView({
     <>
       <RepoSummary config={config} />
       <div className="muted">
-        ZIP: <code>{phase.fileName}</code>
+        Source: <strong>{modeLabel(phase.snapshot.mode)}</strong>{' '}
+        <code>{phase.snapshot.displayName}</code>
       </div>
+      {phase.snapshot.warnings.length > 0 && (
+        <div className="banner warning">
+          {phase.snapshot.warnings.length} warning{phase.snapshot.warnings.length === 1 ? '' : 's'} during fetch.
+          <ul style={{ margin: '6px 0 0 16px', padding: 0 }}>
+            {phase.snapshot.warnings.slice(0, 5).map((w, i) => (
+              <li key={i} style={{ fontSize: 11 }}>{w}</li>
+            ))}
+            {phase.snapshot.warnings.length > 5 && (
+              <li style={{ fontSize: 11 }}>
+                …and {phase.snapshot.warnings.length - 5} more
+              </li>
+            )}
+          </ul>
+        </div>
+      )}
 
       <div className="summary">
         <span className="pill">
@@ -377,7 +641,7 @@ function PreviewView({
       </div>
 
       {summary.added + summary.modified + summary.deleted === 0 ? (
-        <div className="banner warning">No changes detected between the ZIP and GitHub.</div>
+        <div className="banner warning">No changes detected between the source and GitHub.</div>
       ) : (
         <div className="diff-list">
           <DiffSection title="Added" status="added" items={filesByStatus.added} />
@@ -421,7 +685,7 @@ function PreviewView({
               under <code>{config.targetDir}/</code>
             </>
           ) : null}
-          . Make sure your ZIP is complete.
+          . Make sure your source is complete.
         </div>
       )}
 
@@ -438,7 +702,7 @@ function PreviewView({
 
       <div className="row between">
         <button className="button" type="button" onClick={onRestart}>
-          Pick different ZIP
+          Back
         </button>
         <button
           className="button primary"
@@ -540,7 +804,7 @@ function SuccessView({
         </a>
       </div>
       <button className="button full" type="button" onClick={onAnother}>
-        Analyze another ZIP
+        Make another commit
       </button>
     </>
   );
@@ -548,16 +812,41 @@ function SuccessView({
 
 function ErrorView({
   message,
+  recovery,
+  allowManualFallback,
   onRetry,
+  onChooseFile,
+  inputRef,
 }: {
   message: string;
+  recovery?: string;
+  allowManualFallback: boolean;
   onRetry: () => void;
+  onChooseFile: (ev: React.ChangeEvent<HTMLInputElement>) => void;
+  inputRef: React.RefObject<HTMLInputElement>;
 }): React.ReactElement {
   return (
     <>
       <div className="banner error" role="alert">
         {message}
+        {recovery && (
+          <div className="muted" style={{ marginTop: 6 }}>
+            Recovery: {recovery}
+          </div>
+        )}
       </div>
+      {allowManualFallback && (
+        <div className="file-input">
+          <label htmlFor="zipInputFallback">Or upload Overleaf source ZIP manually</label>
+          <input
+            id="zipInputFallback"
+            ref={inputRef}
+            type="file"
+            accept=".zip,application/zip,application/x-zip-compressed"
+            onChange={onChooseFile}
+          />
+        </div>
+      )}
       <button className="button full" type="button" onClick={onRetry}>
         Try again
       </button>

@@ -21,7 +21,7 @@ export default defineManifest({
   description:
     'Commit Overleaf source ZIP snapshots to a GitHub repository. One-way snapshot, no Overleaf Premium needed.',
   icons,
-  permissions: ['storage'],
+  permissions: ['storage', 'activeTab'],
   host_permissions: [
     'https://www.overleaf.com/*',
     'https://api.github.com/*',

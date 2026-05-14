@@ -563,3 +563,58 @@ input[type='text']:focus {
   font-size: 12px;
   font-weight: 600;
 }
+
+.mode-section {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mode-section.experimental {
+  border-color: color-mix(in srgb, var(--warning-text), transparent 60%);
+  background: color-mix(in srgb, var(--warning-bg), transparent 80%);
+}
+
+.mode-title {
+  margin: 0 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mode-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+
+.mode-badge.stable {
+  background: color-mix(in srgb, var(--success), transparent 80%);
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success), transparent 60%);
+}
+
+.mode-badge.fallback {
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+
+.mode-badge.experimental {
+  background: color-mix(in srgb, var(--warning-text), transparent 80%);
+  color: var(--warning-text);
+  border-color: color-mix(in srgb, var(--warning-text), transparent 60%);
+}
