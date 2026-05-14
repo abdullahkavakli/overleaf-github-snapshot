@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Overleaf Snapshot — Offscreen</title>
+  </head>
+  <body>
+    <!--
+      Offscreen document hosting a long-lived Socket.IO/WebSocket session
+      when (and only when) the experimental live-sync mode is enabled.
+
+      In the current build, live read-only pull does not require this
+      offscreen page because the popup/background context can perform the
+      ZIP-route fetch and the (stubbed) realtime handshake. This file is
+      shipped so that future revisions can wire it up without restructuring
+      the build.
+    -->
+    <script type="module" src="./offscreen.ts"></script>
+  </body>
+</html>

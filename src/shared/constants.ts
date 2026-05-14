@@ -1,9 +1,31 @@
-import type { RepoConfig } from './types';
+import type { ExperimentalConfig, RepoConfig } from './types';
 
 export const STORAGE_KEYS = {
   GITHUB_TOKEN: 'github_token',
   REPO_CONFIG: 'repo_config',
+  EXPERIMENTAL_CONFIG: 'experimental_config',
 } as const;
+
+export const DEFAULT_ALLOWED_WRITE_BACK_EXTENSIONS: string[] = [
+  '.tex',
+  '.bib',
+  '.cls',
+  '.sty',
+  '.bst',
+  '.md',
+  '.txt',
+];
+
+export const DEFAULT_EXPERIMENTAL_CONFIG: ExperimentalConfig = {
+  experimentalLiveSyncEnabled: false,
+  liveReadOnlyPullEnabled: false,
+  overleafWriteBackEnabled: false,
+  localReplicaEnabled: false,
+  requireZipBackupBeforeWriteBack: true,
+  requireConfirmationBeforeWriteBack: true,
+  allowBinaryWriteBack: false,
+  allowedWriteBackExtensions: [...DEFAULT_ALLOWED_WRITE_BACK_EXTENSIONS],
+};
 
 export const DEFAULT_IGNORE_PATTERNS: string[] = [
   '*.aux',

@@ -63,3 +63,14 @@ export type DiffSummary = {
   deleted: number;
   unchanged: number;
 };
+
+export type ExperimentalConfig = {
+  experimentalLiveSyncEnabled: boolean;
+  liveReadOnlyPullEnabled: boolean;
+  overleafWriteBackEnabled: boolean;
+  localReplicaEnabled: boolean;
+  requireZipBackupBeforeWriteBack: boolean;
+  requireConfirmationBeforeWriteBack: boolean;
+  allowBinaryWriteBack: boolean;
+  allowedWriteBackExtensions: string[];
+};

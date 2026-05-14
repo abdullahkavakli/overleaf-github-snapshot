@@ -527,6 +527,22 @@ code {
   }
 }
 
+/* ── Experimental section ──────────────────────────────────── */
+
+.experimental-section {
+  border-color: color-mix(in srgb, var(--warning-text), transparent 70%);
+  background: color-mix(in srgb, var(--warning-bg), transparent 80%);
+}
+
+.experimental-section h2::before {
+  background: var(--warning-text);
+}
+
+.experimental-section .field textarea:disabled,
+.experimental-section input[type='checkbox']:disabled + label {
+  opacity: 0.65;
+}
+
 /* ── Reduced motion ────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {

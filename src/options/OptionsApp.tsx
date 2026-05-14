@@ -1,9 +1,21 @@
 import React, { useEffect, useState } from 'react';
-import type { ConnectionTestResult, RepoConfig } from '../shared/types';
-import { DEFAULT_IGNORE_PATTERNS, DEFAULT_REPO_CONFIG } from '../shared/constants';
+import type {
+  ConnectionTestResult,
+  ExperimentalConfig,
+  RepoConfig,
+} from '../shared/types';
 import {
+  DEFAULT_ALLOWED_WRITE_BACK_EXTENSIONS,
+  DEFAULT_EXPERIMENTAL_CONFIG,
+  DEFAULT_IGNORE_PATTERNS,
+  DEFAULT_REPO_CONFIG,
+} from '../shared/constants';
+import {
+  clearExperimentalConfig,
   clearRepoConfig,
+  getExperimentalConfig,
   getRepoConfig,
+  setExperimentalConfig,
   setRepoConfig,
 } from '../storage/extensionStorage';
 import { clearToken, getToken, setToken } from '../github/auth';
@@ -25,15 +37,29 @@ export function Options(): React.ReactElement {
   const [token, setTokenState] = useState<string>('');
   const [showToken, setShowToken] = useState<boolean>(false);
   const [ignoreText, setIgnoreText] = useState<string>(DEFAULT_IGNORE_PATTERNS.join('\n'));
+  const [experimental, setExperimental] = useState<ExperimentalConfig>(
+    DEFAULT_EXPERIMENTAL_CONFIG,
+  );
+  const [extText, setExtText] = useState<string>(
+    DEFAULT_ALLOWED_WRITE_BACK_EXTENSIONS.join('\n'),
+  );
   const [save, setSave] = useState<SaveState>({ kind: 'idle' });
   const [test, setTest] = useState<TestState>({ kind: 'idle' });
 
   useEffect(() => {
     void (async () => {
-      const [c, t] = await Promise.all([getRepoConfig(), getToken()]);
+      const [c, t, e] = await Promise.all([
+        getRepoConfig(),
+        getToken(),
+        getExperimentalConfig(),
+      ]);
       setConfig(c);
       setTokenState(t ?? '');
       setIgnoreText((c.ignorePatterns ?? DEFAULT_IGNORE_PATTERNS).join('\n'));
+      setExperimental(e);
+      setExtText(
+        (e.allowedWriteBackExtensions ?? DEFAULT_ALLOWED_WRITE_BACK_EXTENSIONS).join('\n'),
+      );
     })();
   }, []);
 
@@ -57,6 +83,16 @@ export function Options(): React.ReactElement {
       };
       await setRepoConfig(next);
       setConfig(next);
+
+      const exts = parseExtensions(extText);
+      const nextExperimental: ExperimentalConfig = {
+        ...experimental,
+        allowedWriteBackExtensions:
+          exts.length > 0 ? exts : [...DEFAULT_ALLOWED_WRITE_BACK_EXTENSIONS],
+      };
+      await setExperimentalConfig(nextExperimental);
+      setExperimental(nextExperimental);
+
       setSave({ kind: 'saved' });
       setTimeout(() => setSave((s) => (s.kind === 'saved' ? { kind: 'idle' } : s)), 2000);
     } catch (e) {
@@ -68,9 +104,12 @@ export function Options(): React.ReactElement {
     if (!confirm('Reset all settings? This clears the token and repo configuration.')) return;
     await clearToken();
     await clearRepoConfig();
+    await clearExperimentalConfig();
     setConfig(DEFAULT_REPO_CONFIG);
     setTokenState('');
     setIgnoreText(DEFAULT_IGNORE_PATTERNS.join('\n'));
+    setExperimental(DEFAULT_EXPERIMENTAL_CONFIG);
+    setExtText(DEFAULT_ALLOWED_WRITE_BACK_EXTENSIONS.join('\n'));
     setSave({ kind: 'idle' });
     setTest({ kind: 'idle' });
   };
@@ -253,6 +292,199 @@ export function Options(): React.ReactElement {
         </div>
       </section>
 
+      <section aria-labelledby="sec-experimental" className="experimental-section">
+        <h2 id="sec-experimental">Experimental Overleaf Live Sync</h2>
+        <div className="banner info" style={{ marginBottom: 14 }}>
+          <strong>Experimental.</strong> These features depend on Overleaf
+          internals that are not officially documented and may break without
+          warning. The stable workflow is the automatic ZIP snapshot. All
+          experimental features are disabled by default.
+        </div>
+
+        <div className="checkbox-row">
+          <input
+            id="experimentalLiveSyncEnabled"
+            type="checkbox"
+            checked={experimental.experimentalLiveSyncEnabled}
+            onChange={(e) =>
+              setExperimental({
+                ...experimental,
+                experimentalLiveSyncEnabled: e.target.checked,
+              })
+            }
+          />
+          <label htmlFor="experimentalLiveSyncEnabled">
+            Enable experimental live sync
+            <div className="hint">
+              Master switch. When off, no experimental UI is shown in the popup
+              and no live protocol code runs.
+            </div>
+          </label>
+        </div>
+
+        <div className="checkbox-row" style={{ marginTop: 14 }}>
+          <input
+            id="liveReadOnlyPullEnabled"
+            type="checkbox"
+            disabled={!experimental.experimentalLiveSyncEnabled}
+            checked={experimental.liveReadOnlyPullEnabled}
+            onChange={(e) =>
+              setExperimental({
+                ...experimental,
+                liveReadOnlyPullEnabled: e.target.checked,
+              })
+            }
+          />
+          <label htmlFor="liveReadOnlyPullEnabled">
+            Enable read-only live pull
+            <div className="hint">
+              Read Overleaf project files via the live session instead of the
+              ZIP export. Read-only — never modifies Overleaf.
+            </div>
+          </label>
+        </div>
+
+        <div className="checkbox-row" style={{ marginTop: 14 }}>
+          <input
+            id="overleafWriteBackEnabled"
+            type="checkbox"
+            disabled={!experimental.experimentalLiveSyncEnabled}
+            checked={experimental.overleafWriteBackEnabled}
+            onChange={(e) =>
+              setExperimental({
+                ...experimental,
+                overleafWriteBackEnabled: e.target.checked,
+              })
+            }
+          />
+          <label htmlFor="overleafWriteBackEnabled">
+            Enable explicit Overleaf write-back
+            <div className="hint">
+              Allow pushing selected text files back to Overleaf with a typed
+              confirmation. Disabled by default. Conflicts are always blocked.
+            </div>
+          </label>
+        </div>
+
+        <div className="checkbox-row" style={{ marginTop: 14 }}>
+          <input
+            id="localReplicaEnabled"
+            type="checkbox"
+            disabled={!experimental.experimentalLiveSyncEnabled}
+            checked={experimental.localReplicaEnabled}
+            onChange={(e) =>
+              setExperimental({
+                ...experimental,
+                localReplicaEnabled: e.target.checked,
+              })
+            }
+          />
+          <label htmlFor="localReplicaEnabled">
+            Enable local replica prototype
+            <div className="hint">
+              Choose a local folder to compare against Overleaf. Browser-only,
+              no background sync, no silent overwrites. Requires the File System
+              Access API.
+            </div>
+          </label>
+        </div>
+
+        <div className="checkbox-row" style={{ marginTop: 14 }}>
+          <input
+            id="requireZipBackupBeforeWriteBack"
+            type="checkbox"
+            disabled={
+              !experimental.experimentalLiveSyncEnabled ||
+              !experimental.overleafWriteBackEnabled
+            }
+            checked={experimental.requireZipBackupBeforeWriteBack}
+            onChange={(e) =>
+              setExperimental({
+                ...experimental,
+                requireZipBackupBeforeWriteBack: e.target.checked,
+              })
+            }
+          />
+          <label htmlFor="requireZipBackupBeforeWriteBack">
+            Require ZIP backup before write-back
+            <div className="hint">
+              Fetch a fresh ZIP snapshot before writing any change to Overleaf.
+              Strongly recommended.
+            </div>
+          </label>
+        </div>
+
+        <div className="checkbox-row" style={{ marginTop: 14 }}>
+          <input
+            id="requireConfirmationBeforeWriteBack"
+            type="checkbox"
+            disabled={
+              !experimental.experimentalLiveSyncEnabled ||
+              !experimental.overleafWriteBackEnabled
+            }
+            checked={experimental.requireConfirmationBeforeWriteBack}
+            onChange={(e) =>
+              setExperimental({
+                ...experimental,
+                requireConfirmationBeforeWriteBack: e.target.checked,
+              })
+            }
+          />
+          <label htmlFor="requireConfirmationBeforeWriteBack">
+            Require confirmation before each write-back
+            <div className="hint">
+              Show the changed file list and require explicit typed confirmation
+              before any write. Strongly recommended.
+            </div>
+          </label>
+        </div>
+
+        <div className="checkbox-row" style={{ marginTop: 14 }}>
+          <input
+            id="allowBinaryWriteBack"
+            type="checkbox"
+            disabled={
+              !experimental.experimentalLiveSyncEnabled ||
+              !experimental.overleafWriteBackEnabled
+            }
+            checked={experimental.allowBinaryWriteBack}
+            onChange={(e) =>
+              setExperimental({
+                ...experimental,
+                allowBinaryWriteBack: e.target.checked,
+              })
+            }
+          />
+          <label htmlFor="allowBinaryWriteBack">
+            Allow binary file write-back
+            <div className="hint">
+              Off by default. Write-back is generally limited to text source
+              files. Binaries are riskier to overwrite.
+            </div>
+          </label>
+        </div>
+
+        <div className="field" style={{ marginTop: 18 }}>
+          <label htmlFor="writeBackExts">Allowed write-back extensions</label>
+          <textarea
+            id="writeBackExts"
+            value={extText}
+            disabled={
+              !experimental.experimentalLiveSyncEnabled ||
+              !experimental.overleafWriteBackEnabled
+            }
+            onChange={(e) => setExtText(e.target.value)}
+            spellCheck={false}
+            style={{ minHeight: 110 }}
+          />
+          <div className="hint">
+            One extension per line. Defaults: <code>.tex</code>, <code>.bib</code>,{' '}
+            <code>.cls</code>, <code>.sty</code>, <code>.bst</code>, <code>.md</code>,{' '}
+            <code>.txt</code>.
+          </div>
+        </div>
+      </section>
+
       <section aria-labelledby="sec-test">
         <h2 id="sec-test">Test connection</h2>
         <div className="actions">
@@ -404,4 +636,12 @@ function parseIgnorePatterns(text: string): string[] {
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
+}
+
+function parseExtensions(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((l) => l.trim().toLowerCase())
+    .filter((l) => l.length > 0)
+    .map((l) => (l.startsWith('.') ? l : `.${l}`));
 }
