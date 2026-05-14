@@ -36,6 +36,20 @@ jobs:
       - name: Build extension
         run: npm run build:no-typecheck
 
+      - name: Strip release-only artefacts from dist
+        run: |
+          # Source maps are useful for local dev/debug (vite.config keeps
+          # sourcemap: true) but should not ship to end users — they leak
+          # the original module structure and inflate the release ZIP.
+          # Delete them from the dist tree before packaging.
+          deleted=$(find dist -type f -name '*.map' -print -delete | wc -l)
+          echo "Removed ${deleted} source-map file(s) from dist/ before packaging."
+          # Sanity-check: no .map files survived.
+          if find dist -type f -name '*.map' | grep -q . ; then
+            echo "::error::source-map files still present in dist/ after strip" >&2
+            exit 1
+          fi
+
       - name: Package Chrome extension
         run: |
           zip_name="overleaf-snapshot-to-github-${GITHUB_REF_NAME}.zip"
@@ -47,9 +61,15 @@ jobs:
             -x '.cursor' '.cursor/*' \
             -x '.windsurf' '.windsurf/*' \
             -x '.continue' '.continue/*' \
-            -x '.aider*'
+            -x '.aider*' \
+            -x '*.map'
           cd ..
           unzip -Z1 "${zip_name}" | grep -qx 'manifest.json'
+          # Belt-and-braces: confirm no maps slipped into the final ZIP.
+          if unzip -Z1 "${zip_name}" | grep -q '\.map$' ; then
+            echo "::error::source-map files present in release ZIP" >&2
+            exit 1
+          fi
           echo "ZIP_NAME=${zip_name}" >> "${GITHUB_ENV}"
 
       - name: Create GitHub release
