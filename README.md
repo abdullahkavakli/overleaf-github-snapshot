@@ -180,9 +180,17 @@ Every fetch surface returns typed errors with a `code` and a user-facing message
 
 Each surface includes a recovery action the popup displays alongside the error.
 
-## License note (Overleaf Workshop / AGPL)
+## License note (AGPL-3.0)
 
-Overleaf's open-source server and the Overleaf Workshop extension are AGPL-licensed. **This project does not copy AGPL code.** The experimental live-sync code is a clean-room reimplementation of the minimum protocol needed to discover project metadata and probe the real-time handshake. If the project ever needs deeper live-protocol parity, the AGPL implications must be revisited.
+**This project is licensed under the GNU Affero General Public License v3.0-or-later** (see `LICENSE`).
+
+We relicensed from MIT → AGPL-3.0 starting with `v0.4.0` because the experimental live-sync architecture is derived from [Overleaf Workshop](https://github.com/overleaf-workshop/Overleaf-Workshop) (AGPL-3.0). Specifically, the project-entities REST flow, the Socket.IO 0.9 protocol surface used to read documents, and the joinProject/joinDoc/applyOtUpdate event vocabulary are adapted from Workshop's source — adapted rather than copied verbatim, but close enough that AGPL-3.0 is the only license compatible with the dependency.
+
+What this means practically:
+
+- You may use, modify, and redistribute this extension freely under AGPL-3.0.
+- If you distribute a modified version, or expose a modified version as a network service, you must publish the corresponding source code under AGPL-3.0 too. (See the `LICENSE` file for the full terms.)
+- Versions `v0.1.0` through `v0.3.2` were released under MIT. Those tagged releases remain MIT; the relicensing applies to `v0.4.0` and later. If you need the MIT-licensed code path, check out `v0.3.2` or earlier.
 
 ## Setup
 
@@ -261,4 +269,6 @@ These are slated for a future release.
 
 ## License
 
-MIT License. See [LICENSE](LICENSE).
+GNU Affero General Public License v3.0-or-later. See [LICENSE](LICENSE).
+
+`v0.1.0` – `v0.3.2` were released under MIT; relicensing to AGPL-3.0 took effect with `v0.4.0`. See the [License note](#license-note-agpl-30) above for the rationale (Overleaf Workshop derivation).

@@ -3,8 +3,8 @@
   "private": true,
   "version": "0.3.2",
   "type": "module",
-  "description": "Chrome extension that commits Overleaf source ZIP snapshots to a GitHub repository.",
-  "license": "MIT",
+  "description": "Chrome extension that commits Overleaf project snapshots to a GitHub repository, with optional live read-only sync.",
+  "license": "AGPL-3.0-or-later",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/abdullahkavakli/Overleaf-Snapshot-to-GitHub.git"
