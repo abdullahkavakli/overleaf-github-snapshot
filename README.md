@@ -236,19 +236,28 @@ Vite watches sources and rebuilds `dist/`. Reload the extension in `chrome://ext
 
 1. Open **Options** and enable **Experimental Overleaf Live Sync** plus the specific capabilities you want.
 2. In the popup, the **Experimental Live Sync** section becomes visible.
-3. Click **Live read-only pull** (or use the write-back / local-replica UI in the options page when enabled). Conflicts are blocked; you must resolve them manually.
+3. Click **Live read-only pull**. In this build the real-time document channel is a stub, so any project containing text documents will fail with `protocol_unavailable` and you should fall back to the ZIP route. The popup also blocks deletion-style commits while the snapshot has any fetch warnings, so a partial live snapshot cannot remove real files from GitHub.
+4. **Write-back** and **local replica** are **not user-runnable yet in this build**. The settings toggles persist for future revisions but no popup or options UI calls those modules. Do not look for write-back / local-replica buttons — none exist yet.
 
 ## Manual testing checklist
+
+User-runnable surfaces in this build:
 
 1. **Non-Overleaf tab** → automatic button is hidden; manual ZIP still works.
 2. **Overleaf tab, signed in** → automatic ZIP route fetches, previews diff, commits.
 3. **Overleaf tab, signed out** → automatic route fails with `not_logged_in`; manual fallback remains visible.
 4. **ZIP endpoint changed** → typed `endpoint_changed`/`not_zip` error; manual fallback remains visible.
 5. **Experimental disabled** → no live sync UI visible.
-6. **Experimental enabled** → live read-only button visible (disabled until Overleaf tab is active).
-7. **Live read-only failure** → ZIP mode still works.
-8. **Write-back** → disabled by default; requires backup, confirmation; only allowed extensions; blocks on conflict.
-9. **Local replica** → disabled by default; requires explicit folder selection; no background sync; conflict statuses display.
+6. **Experimental enabled** → live read-only button visible (disabled until Overleaf tab is active); the status hint under the button states the doc channel is a stub.
+7. **Live read-only on a typical project** → fails with `protocol_unavailable`; ZIP mode still works.
+8. **Live snapshot with fetch warnings** → deletion checkbox is disabled, deletions banner is suppressed, commit handler enforces `includeDeletions=false` as defense in depth.
+
+Not user-runnable yet (no UI in this build — modules exist but are not invoked):
+
+- **Write-back** — `writeSelectedFilesBackToOverleaf` exists with conflict detector, OT helper, backup gate, and typed-confirmation contract, but no UI calls it.
+- **Local replica** — `localReplicaManager` and its three-way conflict detector exist, but no folder picker or compare UI is wired up.
+
+These are slated for a future release.
 
 ## License
 
