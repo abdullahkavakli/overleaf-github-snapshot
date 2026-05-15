@@ -324,17 +324,34 @@ export async function handleLiveFetchSnapshot(
     );
   }
 
+  // Diagnostics are OFF by default in stable releases. Even though the
+  // socket client now redacts every payload to structural shape (no
+  // document content can leak), a stable build should stay silent unless
+  // the user explicitly opts in. Opt-in is one line in the Overleaf tab's
+  // DevTools console — no rebuild, no setting, no extra permission:
+  //   localStorage.setItem('ofs-live-debug', '1')
+  // then re-run the live pull. Set it back to '0' (or remove it) to stop.
+  let diagnosticsEnabled = false;
+  try {
+    diagnosticsEnabled = window.localStorage?.getItem('ofs-live-debug') === '1';
+  } catch {
+    // localStorage can throw in sandboxed/blocked contexts — treat as off.
+  }
+  const dbg = (msg: string): void => {
+    if (diagnosticsEnabled) console.debug(`[ofs-live] ${msg}`);
+  };
+
   const client = new SocketIo09Client({
     baseUrl: 'https://www.overleaf.com',
     handshakeQuery: { projectId, t: String(Date.now()) },
     websocketQuery: { projectId },
-    // Debug is on by default for this alpha so DevTools shows the
-    // wire shape — invaluable while the v0.4 series stabilises. Filter
-    // the console by "[ofs-live]" to see only this output.
-    debug: true,
+    // Redacted structural logging only (string lengths / array+object
+    // shape / protocol field names — never document content). Off unless
+    // the user opts in via the localStorage flag above.
+    debug: diagnosticsEnabled,
   });
 
-  console.debug('[ofs-live] phase: connecting');
+  dbg('phase: connecting');
   try {
     await client.connect();
   } catch (e) {
@@ -346,7 +363,7 @@ export async function handleLiveFetchSnapshot(
     );
   }
 
-  console.debug('[ofs-live] phase: joinProject');
+  dbg('phase: joinProject');
   let projectResult: JoinProjectResult;
   try {
     projectResult = await awaitJoinProject(client, projectId);
@@ -360,8 +377,8 @@ export async function handleLiveFetchSnapshot(
   }
 
   const entries = flattenWorkshopTree(projectResult.project.rootFolder);
-  console.debug(
-    `[ofs-live] phase: iterate entries (${entries.length}: ${entries.filter((e) => e.kind === 'doc').length} docs, ${entries.filter((e) => e.kind === 'file').length} files)`,
+  dbg(
+    `phase: iterate entries (${entries.length}: ${entries.filter((e) => e.kind === 'doc').length} docs, ${entries.filter((e) => e.kind === 'file').length} files)`,
   );
   if (entries.length === 0) {
     client.disconnect();
@@ -375,7 +392,7 @@ export async function handleLiveFetchSnapshot(
   const warnings: string[] = [];
 
   for (const entry of entries) {
-    console.debug(`[ofs-live] entry ${entry.kind}: ${entry.path}`);
+    dbg(`entry ${entry.kind}: ${entry.path}`);
     try {
       if (entry.kind === 'doc') {
         const result = await joinDoc(client, entry.id);
@@ -395,14 +412,12 @@ export async function handleLiveFetchSnapshot(
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      console.debug(`[ofs-live] entry ${entry.path} failed: ${msg}`);
+      dbg(`entry ${entry.path} failed: ${msg}`);
       warnings.push(`${entry.path}: ${msg}`);
     }
   }
 
-  console.debug(
-    `[ofs-live] phase: done (${files.length} files, ${warnings.length} warnings)`,
-  );
+  dbg(`phase: done (${files.length} files, ${warnings.length} warnings)`);
   client.disconnect();
 
   files.sort((a, b) => a.path.localeCompare(b.path));
