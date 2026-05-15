@@ -328,8 +328,13 @@ export async function handleLiveFetchSnapshot(
     baseUrl: 'https://www.overleaf.com',
     handshakeQuery: { projectId, t: String(Date.now()) },
     websocketQuery: { projectId },
+    // Debug is on by default for this alpha so DevTools shows the
+    // wire shape — invaluable while the v0.4 series stabilises. Filter
+    // the console by "[ofs-live]" to see only this output.
+    debug: true,
   });
 
+  console.debug('[ofs-live] phase: connecting');
   try {
     await client.connect();
   } catch (e) {
@@ -341,6 +346,7 @@ export async function handleLiveFetchSnapshot(
     );
   }
 
+  console.debug('[ofs-live] phase: joinProject');
   let projectResult: JoinProjectResult;
   try {
     projectResult = await awaitJoinProject(client, projectId);
@@ -354,6 +360,9 @@ export async function handleLiveFetchSnapshot(
   }
 
   const entries = flattenWorkshopTree(projectResult.project.rootFolder);
+  console.debug(
+    `[ofs-live] phase: iterate entries (${entries.length}: ${entries.filter((e) => e.kind === 'doc').length} docs, ${entries.filter((e) => e.kind === 'file').length} files)`,
+  );
   if (entries.length === 0) {
     client.disconnect();
     return failure(
@@ -366,6 +375,7 @@ export async function handleLiveFetchSnapshot(
   const warnings: string[] = [];
 
   for (const entry of entries) {
+    console.debug(`[ofs-live] entry ${entry.kind}: ${entry.path}`);
     try {
       if (entry.kind === 'doc') {
         const result = await joinDoc(client, entry.id);
@@ -385,10 +395,14 @@ export async function handleLiveFetchSnapshot(
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      console.debug(`[ofs-live] entry ${entry.path} failed: ${msg}`);
       warnings.push(`${entry.path}: ${msg}`);
     }
   }
 
+  console.debug(
+    `[ofs-live] phase: done (${files.length} files, ${warnings.length} warnings)`,
+  );
   client.disconnect();
 
   files.sort((a, b) => a.path.localeCompare(b.path));

@@ -37,6 +37,10 @@ export type SocketIo09Options = {
   handshakeTimeoutMs?: number;
   // ms; how long to wait between connecting and the server's "1::" connect-ack.
   connectAckTimeoutMs?: number;
+  // If true, log every incoming/outgoing frame to console.debug with a
+  // "[ofs-live]" prefix. Useful for diagnosing protocol surprises from
+  // the user's DevTools without exposing raw payloads in production.
+  debug?: boolean;
 };
 
 export type SocketIo09Listener = (event: SocketIo09Event) => void;
@@ -62,6 +66,22 @@ export class SocketIo09Client {
   private disconnectHandlers: Array<(reason: string) => void> = [];
 
   constructor(private readonly opts: SocketIo09Options) {}
+
+  private log(direction: 'TX' | 'RX' | 'INFO', label: string, detail?: unknown): void {
+    if (!this.opts.debug) return;
+    if (detail === undefined) {
+      console.debug(`[ofs-live] ${direction} ${label}`);
+    } else {
+      let preview: string;
+      try {
+        preview = typeof detail === 'string' ? detail : JSON.stringify(detail);
+      } catch {
+        preview = String(detail);
+      }
+      if (preview.length > 400) preview = preview.slice(0, 400) + '…';
+      console.debug(`[ofs-live] ${direction} ${label}: ${preview}`);
+    }
+  }
 
   on(listener: SocketIo09Listener): () => void {
     this.listeners.add(listener);
@@ -118,7 +138,9 @@ export class SocketIo09Client {
       throw new SocketIo09Error('emit', 'socket is not open');
     }
     const payload = JSON.stringify({ name, args });
-    this.ws.send(`5:::${payload}`);
+    const frame = `5:::${payload}`;
+    this.log('TX', `event "${name}"`, args);
+    this.ws.send(frame);
   }
 
   emitWithAck<T = unknown[]>(
@@ -165,6 +187,7 @@ export class SocketIo09Client {
         resolve(data as T);
       });
       try {
+        this.log('TX', `emitWithAck "${name}" id=${ackId}`, args);
         this.ws!.send(frame);
       } catch (e) {
         clearTimeout(timer);
@@ -274,6 +297,7 @@ export class SocketIo09Client {
       ws.addEventListener('message', (ev) => {
         const data = typeof ev.data === 'string' ? ev.data : '';
         if (!data) return;
+        this.log('RX', 'frame', data);
         if (!this.connected) {
           if (data === '1::') {
             clearTimeout(ackTimer);
@@ -284,7 +308,7 @@ export class SocketIo09Client {
           }
           if (data.startsWith('7:')) {
             clearTimeout(ackTimer);
-            reject(new SocketIo09Error('websocket', `server error: ${data}`));
+            reject(new SocketIo09Error('websocket', `server error before connect-ack: ${data}`));
             return;
           }
         }
@@ -299,6 +323,7 @@ export class SocketIo09Client {
       ws.addEventListener('close', (ev) => {
         clearTimeout(ackTimer);
         const reason = `WebSocket closed: ${ev.code} ${ev.reason || ''}`.trim();
+        this.log('INFO', 'ws-close', reason);
         if (!this.connected) {
           reject(new SocketIo09Error('websocket', reason));
         }
@@ -307,6 +332,10 @@ export class SocketIo09Client {
           clearInterval(this.heartbeatInterval);
           this.heartbeatInterval = null;
         }
+        // Fail every pending emitWithAck immediately — otherwise each one
+        // would sit on its 15s timer producing what looks like a long
+        // hang on the popup side.
+        this.failAllPendingAcks(reason);
         for (const h of this.disconnectHandlers) {
           try {
             h(reason);
@@ -340,6 +369,7 @@ export class SocketIo09Client {
     if (data === '8::' || data === '8:::') return; // noop
     if (data.startsWith('0::')) {
       this.connected = false;
+      this.failAllPendingAcks(`server sent disconnect frame: ${data}`);
       return;
     }
     if (data.startsWith('5:')) {
@@ -350,8 +380,31 @@ export class SocketIo09Client {
       this.handleAckFrame(data);
       return;
     }
-    // 3 (message) / 4 (json message) / 7 (error) — we don't currently
-    // emit events for those because Overleaf uses type 5 exclusively.
+    if (data.startsWith('7:')) {
+      // Engine.IO type-7 = error. Frame format: 7::[endpoint]:[reason]+[advice]
+      // Surface it loudly: a silently-dropped server error would otherwise
+      // produce a 15s ack timeout per pending request and look like a hang.
+      this.log('RX', 'server-error', data);
+      this.failAllPendingAcks(`server error frame: ${data}`);
+      return;
+    }
+    // 3 (message) / 4 (json message) — Overleaf uses type 5 exclusively
+    // for its events, so we don't translate these into listener calls.
+  }
+
+  private failAllPendingAcks(reason: string): void {
+    if (this.pendingAcks.size === 0) return;
+    const acks = Array.from(this.pendingAcks.values());
+    this.pendingAcks.clear();
+    for (const handler of acks) {
+      try {
+        // Synthesise an err-first response so the unwrap in emitWithAck
+        // turns this into a reject with a meaningful detail.
+        handler([{ socketIo09Error: reason }]);
+      } catch {
+        // ignore
+      }
+    }
   }
 
   private handleEventFrame(data: string): void {
