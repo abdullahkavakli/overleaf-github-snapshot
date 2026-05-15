@@ -527,7 +527,7 @@ function ReadyView({
               >
                 Live read-only pull from Overleaf
               </button>
-              <div className="muted" style={{ marginTop: 4, fontSize: 11 }}>
+              <div className="muted" style={{ marginTop: 4, fontSize: 11.5 }}>
                 Status: implemented via a content-script bridge on the Overleaf
                 project tab (Socket.IO 0.9 / joinProject / joinDoc). Depends on
                 Overleaf's live protocol staying stable; if anything moves you
@@ -538,7 +538,7 @@ function ReadyView({
             </>
           )}
           {(experimental.overleafWriteBackEnabled || experimental.localReplicaEnabled) && (
-            <div className="muted" style={{ marginTop: 8, fontSize: 11 }}>
+            <div className="muted" style={{ marginTop: 8, fontSize: 11.5 }}>
               Note: write-back and local-replica modules are present in the
               codebase but have no popup UI in this build. Enabling their
               flags has no visible effect yet — they are slated for a future
@@ -635,10 +635,10 @@ function PreviewView({
           you also need to commit deletions.
           <ul style={{ margin: '6px 0 0 16px', padding: 0 }}>
             {phase.snapshot.warnings.slice(0, 5).map((w, i) => (
-              <li key={i} style={{ fontSize: 11 }}>{w}</li>
+              <li key={i} style={{ fontSize: 11.5 }}>{w}</li>
             ))}
             {phase.snapshot.warnings.length > 5 && (
-              <li style={{ fontSize: 11 }}>
+              <li style={{ fontSize: 11.5 }}>
                 …and {phase.snapshot.warnings.length - 5} more
               </li>
             )}

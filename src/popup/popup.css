@@ -55,7 +55,11 @@ body {
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
   font-size: 13px;
-  line-height: 1.4;
+  /* 1.5 (was 1.4): the v0.4 experimental status hints, warning lists,
+     and recovery text are multi-line; 1.4 ran them too tight. Dense
+     single-line rows (.diff-row) re-assert 1.4 locally so the diff
+     list stays compact. */
+  line-height: 1.5;
 }
 
 body {
