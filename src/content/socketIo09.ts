@@ -55,6 +55,81 @@ export class SocketIo09Error extends Error {
   }
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Diagnostic redaction.
+//
+// joinDoc ACK frames carry the user's document lines. Logging raw frames
+// (even truncated) prints private Overleaf source into DevTools. These
+// helpers emit only the STRUCTURAL SHAPE — string lengths, array/object
+// structure, protocol field names, numeric versions — never the characters
+// of any string. That is exactly what we need to diagnose the joinDoc
+// ack-shape mismatch, and it is safe to share.
+// ──────────────────────────────────────────────────────────────────────────
+
+export function summarizeValue(v: unknown, depth = 0): string {
+  if (v === null) return 'null';
+  if (v === undefined) return 'undefined';
+  const t = typeof v;
+  if (t === 'number' || t === 'boolean') return String(v);
+  // Never emit string characters — only the length.
+  if (t === 'string') return `str(${(v as string).length})`;
+  if (Array.isArray(v)) {
+    if (v.length === 0) return 'Array(0)';
+    if (depth >= 2) return `Array(${v.length})`;
+    const sample = v.slice(0, 3).map((x) => summarizeValue(x, depth + 1));
+    const more = v.length > 3 ? `,…+${v.length - 3}` : '';
+    return `Array(${v.length})[${sample.join(',')}${more}]`;
+  }
+  if (t === 'object') {
+    if (depth >= 2) return 'Object';
+    const keys = Object.keys(v as Record<string, unknown>);
+    if (keys.length === 0) return '{}';
+    const shown = keys.slice(0, 8);
+    const body = shown
+      .map(
+        (k) =>
+          `${k}:${summarizeValue((v as Record<string, unknown>)[k], depth + 1)}`,
+      )
+      .join(',');
+    const more = keys.length > 8 ? `,…+${keys.length - 8}` : '';
+    return `{${body}${more}}`;
+  }
+  return t;
+}
+
+export function summarizeFrame(data: string): string {
+  if (data.length < 2) return `len(${data.length})`;
+  const type = data[0];
+  if (type === '0') return 'disconnect';
+  if (type === '1') return 'connect';
+  if (type === '2') return 'heartbeat';
+  if (type === '8') return 'noop';
+  if (type === '7') {
+    // Server error text (e.g. "not authorized") — not document content.
+    // Cap length defensively.
+    return `error(${data.slice(0, 60)})`;
+  }
+  const jsonStart = data.search(/[[{]/);
+  if (jsonStart < 0) return `type${type}`;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data.slice(jsonStart));
+  } catch {
+    return `type${type} (payload len=${data.length - jsonStart})`;
+  }
+  if (type === '5') {
+    const ev = parsed as { name?: unknown; args?: unknown };
+    const name = typeof ev.name === 'string' ? ev.name : '?';
+    return `event "${name}" args=${summarizeValue(ev.args)}`;
+  }
+  if (type === '6') {
+    const idMatch = data.match(/^6:+(\d+)\+/);
+    const idPart = idMatch ? ` id=${idMatch[1]}` : '';
+    return `ack${idPart} args=${summarizeValue(parsed)}`;
+  }
+  return `type${type}`;
+}
+
 export class SocketIo09Client {
   private ws: WebSocket | null = null;
   private listeners = new Set<SocketIo09Listener>();
@@ -139,7 +214,7 @@ export class SocketIo09Client {
     }
     const payload = JSON.stringify({ name, args });
     const frame = `5:::${payload}`;
-    this.log('TX', `event "${name}"`, args);
+    this.log('TX', `event "${name}"`, summarizeValue(args));
     this.ws.send(frame);
   }
 
@@ -187,7 +262,7 @@ export class SocketIo09Client {
         resolve(data as T);
       });
       try {
-        this.log('TX', `emitWithAck "${name}" id=${ackId}`, args);
+        this.log('TX', `emitWithAck "${name}" id=${ackId}`, summarizeValue(args));
         this.ws!.send(frame);
       } catch (e) {
         clearTimeout(timer);
@@ -297,7 +372,7 @@ export class SocketIo09Client {
       ws.addEventListener('message', (ev) => {
         const data = typeof ev.data === 'string' ? ev.data : '';
         if (!data) return;
-        this.log('RX', 'frame', data);
+        this.log('RX', 'frame', summarizeFrame(data));
         if (!this.connected) {
           if (data === '1::') {
             clearTimeout(ackTimer);
@@ -369,7 +444,7 @@ export class SocketIo09Client {
     if (data === '8::' || data === '8:::') return; // noop
     if (data.startsWith('0::')) {
       this.connected = false;
-      this.failAllPendingAcks(`server sent disconnect frame: ${data}`);
+      this.failAllPendingAcks(`server sent disconnect frame: ${data.slice(0, 40)}`);
       return;
     }
     if (data.startsWith('5:')) {
@@ -384,8 +459,8 @@ export class SocketIo09Client {
       // Engine.IO type-7 = error. Frame format: 7::[endpoint]:[reason]+[advice]
       // Surface it loudly: a silently-dropped server error would otherwise
       // produce a 15s ack timeout per pending request and look like a hang.
-      this.log('RX', 'server-error', data);
-      this.failAllPendingAcks(`server error frame: ${data}`);
+      this.log('RX', 'server-error', summarizeFrame(data));
+      this.failAllPendingAcks(`server error frame: ${data.slice(0, 80)}`);
       return;
     }
     // 3 (message) / 4 (json message) — Overleaf uses type 5 exclusively
