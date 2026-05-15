@@ -129,7 +129,7 @@ export function Options(): React.ReactElement {
   return (
     <div className="container">
       <header className="page-header">
-        <h1>Overleaf Snapshot to GitHub</h1>
+        <h1>Overleaf GitHub Snapshot</h1>
         <p className="lead">
           Configure the GitHub repository and token used to commit Overleaf source ZIP snapshots.
           Settings are stored locally in <code>chrome.storage.local</code> and only sent to{' '}

@@ -289,7 +289,7 @@ export function Popup(): React.ReactElement {
   return (
     <div className="popup">
       <header className="popup-header">
-        <h1>Overleaf Snapshot to GitHub</h1>
+        <h1>Overleaf GitHub Snapshot</h1>
         <button
           className="gear"
           aria-label="Open options"

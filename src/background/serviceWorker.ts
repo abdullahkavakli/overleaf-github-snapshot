@@ -1,4 +1,4 @@
-// Background service worker for "Overleaf Snapshot to GitHub".
+// Background service worker for "Overleaf GitHub Snapshot".
 //
 // The popup and options pages make GitHub API calls directly from their
 // privileged extension contexts. The service worker exists for:

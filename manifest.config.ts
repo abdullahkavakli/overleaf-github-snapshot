@@ -25,7 +25,7 @@ const chromeVersion = semver.replace(/-.+$/, '');
 // running `npm run build`.
 export default defineManifest({
   manifest_version: 3,
-  name: 'Overleaf Snapshot to GitHub',
+  name: 'Overleaf GitHub Snapshot',
   version: chromeVersion,
   version_name: semver !== chromeVersion ? semver : undefined,
   description:
@@ -38,7 +38,7 @@ export default defineManifest({
   ],
   action: {
     default_popup: 'src/popup/popup.html',
-    default_title: 'Overleaf Snapshot to GitHub',
+    default_title: 'Overleaf GitHub Snapshot',
     default_icon: icons,
   },
   options_page: 'src/options/options.html',

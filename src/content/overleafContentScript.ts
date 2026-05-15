@@ -240,7 +240,7 @@ function showTooltip(): void {
   const ol = document.createElement('ol');
   ol.innerHTML = `
     <li>In Overleaf, open <em>Menu &rarr; Source</em> and download the ZIP.</li>
-    <li>Click the <em>Overleaf Snapshot to GitHub</em> icon in your browser toolbar.</li>
+    <li>Click the <em>Overleaf GitHub Snapshot</em> icon in your browser toolbar.</li>
     <li>Select the ZIP, review the diff, and commit.</li>
   `;
 

@@ -1,5 +1,5 @@
 {
-  "name": "overleaf-snapshot-to-github",
+  "name": "overleaf-github-snapshot",
   "private": true,
   "version": "0.4.0-alpha.3",
   "type": "module",
@@ -7,12 +7,12 @@
   "license": "AGPL-3.0-or-later",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/abdullahkavakli/Overleaf-Snapshot-to-GitHub.git"
+    "url": "git+https://github.com/abdullahkavakli/overleaf-github-snapshot.git"
   },
   "bugs": {
-    "url": "https://github.com/abdullahkavakli/Overleaf-Snapshot-to-GitHub/issues"
+    "url": "https://github.com/abdullahkavakli/overleaf-github-snapshot/issues"
   },
-  "homepage": "https://github.com/abdullahkavakli/Overleaf-Snapshot-to-GitHub#readme",
+  "homepage": "https://github.com/abdullahkavakli/overleaf-github-snapshot#readme",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
