@@ -141,7 +141,28 @@ export class SocketIo09Client {
       }, timeoutMs);
       this.pendingAcks.set(ackId, (responseArgs) => {
         clearTimeout(timer);
-        resolve(responseArgs as T);
+        // Socket.IO 0.9 ack convention: the server-side handler is invoked
+        // as `cb(err, ...data)`. The callback wire payload is therefore
+        // [err, ...data]. We resolve callers with just `data` and treat
+        // any truthy err as a rejection. (Confirmed against Overleaf
+        // Workshop's promisified emit — they do the same thing.)
+        const [err, ...data] = responseArgs;
+        if (err !== null && err !== undefined) {
+          let detail: string;
+          try {
+            detail = typeof err === 'string' ? err : JSON.stringify(err);
+          } catch {
+            detail = String(err);
+          }
+          reject(
+            new SocketIo09Error(
+              'emitWithAck',
+              `server returned error for "${name}": ${detail}`,
+            ),
+          );
+          return;
+        }
+        resolve(data as T);
       });
       try {
         this.ws!.send(frame);
