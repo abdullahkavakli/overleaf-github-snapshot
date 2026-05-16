@@ -2,6 +2,10 @@
 
 A Chrome Extension (Manifest V3) that commits Overleaf project snapshots to a GitHub repository — without needing **Overleaf Premium**, Overleaf's Git integration, or the Overleaf GitHub sync feature.
 
+## Install
+
+Install from the Chrome Web Store: [Overleaf GitHub Snapshot](https://chromewebstore.google.com/detail/overleaf-github-snapshot/lghcgnlnondbifcmflgnlmlahhaolfmk)
+
 > **This extension does not provide guaranteed bidirectional Overleaf↔GitHub Git sync.** It creates GitHub commits from Overleaf source ZIP snapshots. An experimental live-sync section is gated behind opt-in settings and clearly labelled as such.
 
 ## What this extension does
