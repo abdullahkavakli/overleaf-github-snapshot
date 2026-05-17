@@ -27,6 +27,12 @@ If the automatic ZIP route fails, you can fall back to **Manual ZIP upload**: do
 
 There is also an opt-in **Experimental Overleaf Live Sync** section in the options page. It is disabled by default and clearly marked experimental.
 
+### Per-project mappings
+
+Each Overleaf project is linked to **its own** GitHub repository and **its own** GitHub token (strictly one project → one repo). When you open a project tab, the popup auto-resolves that project's repo; the first time you open an unlinked project it shows an inline setup form. All mappings can also be managed from the options page. Tokens are stored per mapping in `chrome.storage.local`.
+
+**Migration from ≤ 0.4.x.** The old single repo config + token are read once and used to pre-fill the inline setup form for the first project you link; saving that mapping migrates and clears the legacy keys. Nothing is sent anywhere during migration.
+
 ## Modes
 
 ### A. Stable mode — automatic Overleaf ZIP snapshot
@@ -89,7 +95,7 @@ The extension was designed with the following guarantees:
 
 - **No Overleaf cookie copying.** The extension never reads `document.cookie`, never requests the `chrome.cookies` permission, and never stores or transmits an Overleaf cookie. All Overleaf requests use `credentials: "include"` so the browser attaches its own session cookies — the extension code does not see them.
 - **No raw Overleaf credentials.** The extension does not ask for an Overleaf password, API token, or session string. There is no Overleaf login UI inside the extension.
-- **GitHub token isolation.** The GitHub PAT is stored only in `chrome.storage.local`. It is only sent to `api.github.com`. The content script never receives it.
+- **GitHub token isolation.** Each project's GitHub PAT is stored only in `chrome.storage.local` (per-project, inside the project-links map). It is only sent to `api.github.com`. The content script never receives it.
 - **Narrow host permissions.** `https://www.overleaf.com/*` and `https://api.github.com/*` only.
 - **No force push, ever.** The Git ref update always sends `force: false`. If the branch moved between preview and commit, the commit aborts cleanly.
 - **No destructive automatic sync.** All write-back actions, local-replica pulls, and Overleaf writes require explicit user gestures.
@@ -226,24 +232,31 @@ Vite watches sources and rebuilds `dist/`. Reload the extension in `chrome://ext
 ### GitHub token
 
 1. Go to <https://github.com/settings/personal-access-tokens/new>.
-2. Pick a fine-grained token, scoped to a single repository.
+2. Pick a fine-grained token, scoped to the single repository for that project.
 3. Permissions: **Contents: Read and write**, **Metadata: Read-only**.
-4. Paste in **Options → Personal access token** and save.
-5. Use **Test GitHub connection** to verify.
+4. Paste it into the project's mapping — either the popup's inline setup form (shown when you open an unlinked project) or **Options → Add mapping / Edit**.
+5. Use **Test** (per mapping) to verify. Repeat per project; each project gets its own narrowly-scoped token.
 
 ## Day-to-day use
 
+### First time: link a project
+
+1. Open the project on Overleaf (`https://www.overleaf.com/project/...`).
+2. Click the extension icon. Because the project isn't linked yet, the popup shows an inline **link this project to a GitHub repo** form (pre-filled from your old single config if you're upgrading from ≤ 0.4.x).
+3. Enter owner / repo / branch / optional target dir / token, optionally **Test connection**, then **Save & continue**.
+4. The mapping is stored; next time you open this project the popup goes straight to the snapshot screen.
+
 ### Stable (automatic)
 
-1. Open your project on Overleaf (`https://www.overleaf.com/project/...`).
+1. Open your project on Overleaf (`https://www.overleaf.com/project/...`). The popup auto-resolves this project's linked repo.
 2. Click the extension toolbar icon.
 3. Click **Fetch from current Overleaf project**.
-4. Review the diff and commit.
+4. Review the diff and commit (to this project's repo).
 
 ### Fallback (manual)
 
 1. In Overleaf: **Menu → Source**, save the ZIP.
-2. Click the extension icon.
+2. Click the extension icon. With the project tab open it resolves that project's repo; with **no** Overleaf tab open it shows a picker to choose which linked project's repo to target.
 3. Use the **Manual ZIP upload** section to pick the ZIP.
 4. Review the diff and commit.
 
