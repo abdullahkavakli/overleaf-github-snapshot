@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import type {
   ConnectionTestResult,
   ExperimentalConfig,
+  ProjectLink,
+  ProjectLinkMap,
   RepoConfig,
 } from '../shared/types';
 import {
@@ -12,14 +14,17 @@ import {
 } from '../shared/constants';
 import {
   clearExperimentalConfig,
-  clearRepoConfig,
+  clearLegacySingleConfig,
+  clearProjectLinks,
   getExperimentalConfig,
-  getRepoConfig,
+  getProjectLinkMap,
+  isConfigured,
+  removeProjectLink,
   setExperimentalConfig,
-  setRepoConfig,
+  setProjectLink,
 } from '../storage/extensionStorage';
-import { clearToken, getToken, setToken } from '../github/auth';
 import { testConnection } from '../github/githubClient';
+import { normalizeOverleafProjectId } from '../overleaf/overleafContext';
 
 type SaveState =
   | { kind: 'idle' }
@@ -27,269 +32,222 @@ type SaveState =
   | { kind: 'saved' }
   | { kind: 'error'; message: string };
 
-type TestState =
-  | { kind: 'idle' }
-  | { kind: 'running' }
-  | { kind: 'done'; result: ConnectionTestResult };
+type EditorState = {
+  projectId: string;
+  isNew: boolean;
+  repo: RepoConfig;
+  token: string;
+  ignoreText: string;
+};
 
 export function Options(): React.ReactElement {
-  const [config, setConfig] = useState<RepoConfig>(DEFAULT_REPO_CONFIG);
-  const [token, setTokenState] = useState<string>('');
-  const [showToken, setShowToken] = useState<boolean>(false);
-  const [ignoreText, setIgnoreText] = useState<string>(DEFAULT_IGNORE_PATTERNS.join('\n'));
+  const [links, setLinks] = useState<ProjectLinkMap>({});
+  const [loaded, setLoaded] = useState<boolean>(false);
+  const [editing, setEditing] = useState<EditorState | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
   const [experimental, setExperimental] = useState<ExperimentalConfig>(
     DEFAULT_EXPERIMENTAL_CONFIG,
   );
   const [extText, setExtText] = useState<string>(
     DEFAULT_ALLOWED_WRITE_BACK_EXTENSIONS.join('\n'),
   );
-  const [save, setSave] = useState<SaveState>({ kind: 'idle' });
-  const [test, setTest] = useState<TestState>({ kind: 'idle' });
+  const [expSave, setExpSave] = useState<SaveState>({ kind: 'idle' });
+
+  const reload = async () => {
+    const map = await getProjectLinkMap();
+    setLinks(map);
+  };
 
   useEffect(() => {
     void (async () => {
-      const [c, t, e] = await Promise.all([
-        getRepoConfig(),
-        getToken(),
+      const [map, e] = await Promise.all([
+        getProjectLinkMap(),
         getExperimentalConfig(),
       ]);
-      setConfig(c);
-      setTokenState(t ?? '');
-      setIgnoreText((c.ignorePatterns ?? DEFAULT_IGNORE_PATTERNS).join('\n'));
+      setLinks(map);
       setExperimental(e);
       setExtText(
         (e.allowedWriteBackExtensions ?? DEFAULT_ALLOWED_WRITE_BACK_EXTENSIONS).join('\n'),
       );
+      setLoaded(true);
     })();
   }, []);
 
-  const onSave = async () => {
-    setSave({ kind: 'saving' });
-    try {
-      const trimmedToken = token.trim();
-      if (trimmedToken) {
-        await setToken(trimmedToken);
-      } else {
-        await clearToken();
-      }
-      const patterns = parseIgnorePatterns(ignoreText);
-      const next: RepoConfig = {
-        owner: config.owner.trim(),
-        repo: config.repo.trim(),
-        branch: config.branch.trim() || 'main',
-        targetDir: (config.targetDir ?? '').trim(),
-        includeDeletions: config.includeDeletions,
-        ignorePatterns: patterns.length > 0 ? patterns : [...DEFAULT_IGNORE_PATTERNS],
-      };
-      await setRepoConfig(next);
-      setConfig(next);
+  const startAdd = () => {
+    setEditError(null);
+    setEditing({
+      projectId: '',
+      isNew: true,
+      repo: { ...DEFAULT_REPO_CONFIG },
+      token: '',
+      ignoreText: DEFAULT_IGNORE_PATTERNS.join('\n'),
+    });
+  };
 
+  const startEdit = (projectId: string) => {
+    const link = links[projectId];
+    if (!link) return;
+    setEditError(null);
+    setEditing({
+      projectId,
+      isNew: false,
+      repo: { ...link.repo },
+      token: link.token,
+      ignoreText: (link.repo.ignorePatterns ?? DEFAULT_IGNORE_PATTERNS).join('\n'),
+    });
+  };
+
+  const saveEdit = async () => {
+    if (!editing) return;
+    setEditError(null);
+
+    let projectId = editing.projectId;
+    if (editing.isNew) {
+      const normalized = normalizeOverleafProjectId(editing.projectId);
+      if (!normalized) {
+        setEditError(
+          'Enter a valid Overleaf project ID or a project URL (https://www.overleaf.com/project/…).',
+        );
+        return;
+      }
+      if (links[normalized]) {
+        setEditError(`Project ${normalized} is already linked. Edit that mapping instead.`);
+        return;
+      }
+      projectId = normalized;
+    }
+
+    const patterns = parseIgnorePatterns(editing.ignoreText);
+    const repo: RepoConfig = {
+      owner: editing.repo.owner.trim(),
+      repo: editing.repo.repo.trim(),
+      branch: editing.repo.branch.trim() || 'main',
+      targetDir: (editing.repo.targetDir ?? '').trim(),
+      includeDeletions: editing.repo.includeDeletions,
+      ignorePatterns: patterns.length > 0 ? patterns : [...DEFAULT_IGNORE_PATTERNS],
+    };
+    const token = editing.token.trim();
+    if (!isConfigured(repo)) {
+      setEditError('Owner, repository, and branch are required.');
+      return;
+    }
+    if (token.length === 0) {
+      setEditError('A GitHub token is required for this project.');
+      return;
+    }
+
+    const link: ProjectLink = { repo, token };
+    await setProjectLink(projectId, link);
+    await reload();
+    setEditing(null);
+  };
+
+  const removeMapping = async (projectId: string) => {
+    if (!confirm(`Remove the mapping for project ${projectId}? This does not touch GitHub.`)) {
+      return;
+    }
+    await removeProjectLink(projectId);
+    await reload();
+    if (editing && !editing.isNew && editing.projectId === projectId) setEditing(null);
+  };
+
+  const resetAll = async () => {
+    if (
+      !confirm(
+        'Reset all settings? This clears every project→repo mapping (including tokens), the legacy single config, and experimental settings.',
+      )
+    ) {
+      return;
+    }
+    await Promise.all([
+      clearProjectLinks(),
+      clearLegacySingleConfig(),
+      clearExperimentalConfig(),
+    ]);
+    setLinks({});
+    setEditing(null);
+    setExperimental(DEFAULT_EXPERIMENTAL_CONFIG);
+    setExtText(DEFAULT_ALLOWED_WRITE_BACK_EXTENSIONS.join('\n'));
+    setExpSave({ kind: 'idle' });
+  };
+
+  const saveExperimental = async () => {
+    setExpSave({ kind: 'saving' });
+    try {
       const exts = parseExtensions(extText);
-      const nextExperimental: ExperimentalConfig = {
+      const next: ExperimentalConfig = {
         ...experimental,
         allowedWriteBackExtensions:
           exts.length > 0 ? exts : [...DEFAULT_ALLOWED_WRITE_BACK_EXTENSIONS],
       };
-      await setExperimentalConfig(nextExperimental);
-      setExperimental(nextExperimental);
-
-      setSave({ kind: 'saved' });
-      setTimeout(() => setSave((s) => (s.kind === 'saved' ? { kind: 'idle' } : s)), 2000);
+      await setExperimentalConfig(next);
+      setExperimental(next);
+      setExpSave({ kind: 'saved' });
+      setTimeout(
+        () => setExpSave((s) => (s.kind === 'saved' ? { kind: 'idle' } : s)),
+        2000,
+      );
     } catch (e) {
-      setSave({ kind: 'error', message: e instanceof Error ? e.message : String(e) });
+      setExpSave({ kind: 'error', message: e instanceof Error ? e.message : String(e) });
     }
   };
 
-  const onReset = async () => {
-    if (!confirm('Reset all settings? This clears the token and repo configuration.')) return;
-    await clearToken();
-    await clearRepoConfig();
-    await clearExperimentalConfig();
-    setConfig(DEFAULT_REPO_CONFIG);
-    setTokenState('');
-    setIgnoreText(DEFAULT_IGNORE_PATTERNS.join('\n'));
-    setExperimental(DEFAULT_EXPERIMENTAL_CONFIG);
-    setExtText(DEFAULT_ALLOWED_WRITE_BACK_EXTENSIONS.join('\n'));
-    setSave({ kind: 'idle' });
-    setTest({ kind: 'idle' });
-  };
-
-  const onTest = async () => {
-    setTest({ kind: 'running' });
-    const candidate: RepoConfig = {
-      ...config,
-      owner: config.owner.trim(),
-      repo: config.repo.trim(),
-      branch: config.branch.trim() || 'main',
-    };
-    const result = await testConnection(token.trim(), candidate);
-    setTest({ kind: 'done', result });
-  };
+  const entries = Object.entries(links);
 
   return (
     <div className="container">
       <header className="page-header">
         <h1>Overleaf GitHub Snapshot</h1>
         <p className="lead">
-          Configure the GitHub repository and token used to commit Overleaf source ZIP snapshots.
-          Settings are stored locally in <code>chrome.storage.local</code> and only sent to{' '}
-          <code>api.github.com</code>.
+          Link each Overleaf project to its own GitHub repository and token.
+          When you open a project, the popup automatically resolves its repo.
+          Everything is stored locally in <code>chrome.storage.local</code> and
+          only sent to <code>api.github.com</code>.
         </p>
       </header>
 
-      <section aria-labelledby="sec-auth">
-        <h2 id="sec-auth">GitHub authentication</h2>
-        <div className="field">
-          <label htmlFor="token">
-            Personal access token <span className="required" aria-hidden="true">*</span>
-          </label>
-          <div className="token-row">
-            <input
-              id="token"
-              className="mono"
-              type={showToken ? 'text' : 'password'}
-              value={token}
-              autoComplete="off"
-              spellCheck={false}
-              placeholder="github_pat_..."
-              aria-describedby="token-hint"
-              aria-required="true"
-              onChange={(e) => setTokenState(e.target.value)}
-            />
-            <button
-              type="button"
-              className="toggle"
-              aria-pressed={showToken}
-              aria-label={showToken ? 'Hide token' : 'Show token'}
-              onClick={() => setShowToken((v) => !v)}
-            >
-              {showToken ? 'Hide' : 'Show'}
+      <section aria-labelledby="sec-mappings">
+        <h2 id="sec-mappings">Project → repository mappings</h2>
+
+        {!loaded ? (
+          <p className="lead">Loading…</p>
+        ) : entries.length === 0 ? (
+          <div className="banner info">
+            No mappings yet. Open an Overleaf project tab and the popup will
+            prompt you to link it, or add one manually below.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {entries.map(([projectId, link]) => (
+              <MappingRow
+                key={projectId}
+                projectId={projectId}
+                link={link}
+                isEditing={
+                  editing !== null && !editing.isNew && editing.projectId === projectId
+                }
+                onEdit={() => startEdit(projectId)}
+                onRemove={() => removeMapping(projectId)}
+              />
+            ))}
+          </div>
+        )}
+
+        {editing ? (
+          <MappingEditor
+            state={editing}
+            error={editError}
+            onChange={setEditing}
+            onCancel={() => setEditing(null)}
+            onSave={saveEdit}
+          />
+        ) : (
+          <div className="actions" style={{ marginTop: 16 }}>
+            <button type="button" className="button primary" onClick={startAdd}>
+              Add mapping
             </button>
           </div>
-          <div id="token-hint" className="hint">
-            Use a <strong>fine-grained personal access token</strong> scoped to{' '}
-            <em>only this repository</em>, with <code>Contents: Read and write</code> and{' '}
-            <code>Metadata: Read</code> permissions.
-          </div>
-        </div>
-      </section>
-
-      <section aria-labelledby="sec-repo">
-        <h2 id="sec-repo">Repository</h2>
-        <div className="row">
-          <div className="field">
-            <label htmlFor="owner">
-              Owner <span className="required" aria-hidden="true">*</span>
-            </label>
-            <input
-              id="owner"
-              className="mono"
-              type="text"
-              autoComplete="off"
-              spellCheck={false}
-              value={config.owner}
-              aria-describedby="owner-hint"
-              aria-required="true"
-              onChange={(e) => setConfig({ ...config, owner: e.target.value })}
-              placeholder="username-or-org"
-            />
-            <div id="owner-hint" className="hint">
-              The GitHub user or organization that owns the repo.
-            </div>
-          </div>
-          <div className="field">
-            <label htmlFor="repo">
-              Repository <span className="required" aria-hidden="true">*</span>
-            </label>
-            <input
-              id="repo"
-              className="mono"
-              type="text"
-              autoComplete="off"
-              spellCheck={false}
-              value={config.repo}
-              aria-required="true"
-              onChange={(e) => setConfig({ ...config, repo: e.target.value })}
-              placeholder="repo-name"
-            />
-          </div>
-        </div>
-        <div className="row">
-          <div className="field">
-            <label htmlFor="branch">Branch</label>
-            <input
-              id="branch"
-              className="mono"
-              type="text"
-              autoComplete="off"
-              spellCheck={false}
-              value={config.branch}
-              aria-describedby="branch-hint"
-              onChange={(e) => setConfig({ ...config, branch: e.target.value })}
-              placeholder="main"
-            />
-            <div id="branch-hint" className="hint">
-              Must already exist on GitHub with at least one commit.
-            </div>
-          </div>
-          <div className="field">
-            <label htmlFor="targetDir">Target directory</label>
-            <input
-              id="targetDir"
-              className="mono"
-              type="text"
-              autoComplete="off"
-              spellCheck={false}
-              value={config.targetDir ?? ''}
-              aria-describedby="targetDir-hint"
-              onChange={(e) => setConfig({ ...config, targetDir: e.target.value })}
-              placeholder="paper"
-            />
-            <div id="targetDir-hint" className="hint">
-              Optional. ZIP contents are placed under this directory in the repo and deletions are
-              scoped to it.
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section aria-labelledby="sec-behavior">
-        <h2 id="sec-behavior">Commit behavior</h2>
-        <div className="checkbox-row">
-          <input
-            id="includeDeletions"
-            type="checkbox"
-            checked={config.includeDeletions}
-            aria-describedby="deletions-hint"
-            onChange={(e) => setConfig({ ...config, includeDeletions: e.target.checked })}
-          />
-          <label htmlFor="includeDeletions">
-            Include deletions by default
-            <div id="deletions-hint" className="hint">
-              When enabled, files present in the repo but missing from the ZIP will be removed
-              (only inside the target directory). You can toggle this per commit in the popup.
-            </div>
-          </label>
-        </div>
-      </section>
-
-      <section aria-labelledby="sec-ignore">
-        <h2 id="sec-ignore">Ignore patterns</h2>
-        <div className="field">
-          <label htmlFor="ignore">One pattern per line</label>
-          <textarea
-            id="ignore"
-            value={ignoreText}
-            aria-describedby="ignore-hint"
-            onChange={(e) => setIgnoreText(e.target.value)}
-            spellCheck={false}
-          />
-          <div id="ignore-hint" className="hint">
-            Glob-like patterns matched against ZIP paths. Use <code>*</code> for any non-slash
-            chars, <code>**</code> across slashes. Lines starting with <code>#</code> are
-            comments.
-          </div>
-        </div>
+        )}
       </section>
 
       <section aria-labelledby="sec-experimental" className="experimental-section">
@@ -298,7 +256,8 @@ export function Options(): React.ReactElement {
           <strong>Experimental.</strong> These features depend on Overleaf
           internals that are not officially documented and may break without
           warning. The stable workflow is the automatic ZIP snapshot. All
-          experimental features are disabled by default.
+          experimental features are disabled by default. These settings are
+          global (not per project).
         </div>
 
         <div className="checkbox-row">
@@ -483,15 +442,111 @@ export function Options(): React.ReactElement {
             <code>.txt</code>.
           </div>
         </div>
+
+        <div className="actions" style={{ marginTop: 16 }}>
+          <button
+            type="button"
+            className="button primary"
+            onClick={saveExperimental}
+            disabled={expSave.kind === 'saving'}
+            aria-busy={expSave.kind === 'saving'}
+          >
+            {expSave.kind === 'saving' ? (
+              <>
+                <span className="spinner" aria-hidden="true" />
+                Saving…
+              </>
+            ) : (
+              'Save experimental settings'
+            )}
+          </button>
+          <span
+            className={
+              expSave.kind === 'saved'
+                ? 'save-status ok'
+                : expSave.kind === 'error'
+                  ? 'save-status err'
+                  : 'save-status'
+            }
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {expSave.kind === 'saved' && 'Saved.'}
+            {expSave.kind === 'error' && `Save failed: ${expSave.message}`}
+          </span>
+        </div>
       </section>
 
-      <section aria-labelledby="sec-test">
-        <h2 id="sec-test">Test connection</h2>
-        <div className="actions">
+      <div className="actions">
+        <button type="button" className="button" onClick={resetAll}>
+          Reset all settings
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MappingRow({
+  projectId,
+  link,
+  isEditing,
+  onEdit,
+  onRemove,
+}: {
+  projectId: string;
+  link: ProjectLink;
+  isEditing: boolean;
+  onEdit: () => void;
+  onRemove: () => void;
+}): React.ReactElement {
+  const [test, setTest] = useState<
+    { kind: 'idle' } | { kind: 'running' } | { kind: 'done'; result: ConnectionTestResult }
+  >({ kind: 'idle' });
+
+  const runTest = async () => {
+    setTest({ kind: 'running' });
+    const result = await testConnection(link.token, link.repo);
+    setTest({ kind: 'done', result });
+  };
+
+  return (
+    <div
+      style={{
+        border: '1px solid var(--border)',
+        borderRadius: 8,
+        padding: '12px 14px',
+        background: 'var(--bg)',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'baseline',
+          justifyContent: 'space-between',
+          gap: 12,
+          flexWrap: 'wrap',
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 600 }}>
+            <code>{link.repo.owner}/{link.repo.repo}</code>
+          </div>
+          <div className="hint" style={{ marginTop: 2 }}>
+            Project <code>{projectId}</code> · branch <code>{link.repo.branch}</code>
+            {link.repo.targetDir ? (
+              <>
+                {' '}· dir <code>{link.repo.targetDir}/</code>
+              </>
+            ) : null}{' '}
+            · token {link.token.trim().length > 0 ? 'set' : <strong>missing</strong>}
+          </div>
+        </div>
+        <div className="actions" style={{ paddingTop: 0 }}>
           <button
             type="button"
             className="button"
-            onClick={onTest}
+            onClick={runTest}
             disabled={test.kind === 'running'}
             aria-busy={test.kind === 'running'}
           >
@@ -501,54 +556,230 @@ export function Options(): React.ReactElement {
                 Testing…
               </>
             ) : (
-              'Test GitHub connection'
+              'Test'
             )}
           </button>
+          <button type="button" className="button" onClick={onEdit} disabled={isEditing}>
+            {isEditing ? 'Editing…' : 'Edit'}
+          </button>
+          <button type="button" className="button" onClick={onRemove}>
+            Remove
+          </button>
         </div>
+      </div>
+      {test.kind === 'done' && (
         <div
           aria-live="polite"
-          aria-atomic="true"
-          role={test.kind === 'done' && !test.result.ok ? 'alert' : 'status'}
+          role={test.result.ok ? 'status' : 'alert'}
         >
-          {test.kind === 'done' && <TestResultView result={test.result} />}
+          <TestResultView result={test.result} />
         </div>
-      </section>
+      )}
+    </div>
+  );
+}
+
+function MappingEditor({
+  state,
+  error,
+  onChange,
+  onCancel,
+  onSave,
+}: {
+  state: EditorState;
+  error: string | null;
+  onChange: (s: EditorState) => void;
+  onCancel: () => void;
+  onSave: () => void;
+}): React.ReactElement {
+  const [showToken, setShowToken] = useState<boolean>(false);
+  const setRepo = (patch: Partial<RepoConfig>) =>
+    onChange({ ...state, repo: { ...state.repo, ...patch } });
+
+  return (
+    <div
+      style={{
+        border: '1px solid var(--accent)',
+        borderRadius: 8,
+        padding: '18px 18px',
+        marginTop: 16,
+        background: 'var(--bg)',
+      }}
+    >
+      <h2 style={{ marginTop: 0 }}>
+        {state.isNew ? 'Add a project mapping' : `Edit mapping`}
+      </h2>
+
+      {state.isNew && (
+        <div className="field">
+          <label htmlFor="ed-pid">
+            Overleaf project ID or URL{' '}
+            <span className="required" aria-hidden="true">*</span>
+          </label>
+          <input
+            id="ed-pid"
+            className="mono"
+            type="text"
+            autoComplete="off"
+            spellCheck={false}
+            value={state.projectId}
+            placeholder="65ab… or https://www.overleaf.com/project/65ab…"
+            onChange={(e) => onChange({ ...state, projectId: e.target.value })}
+          />
+          <div className="hint">
+            Paste the project URL from your browser, or just the ID segment.
+          </div>
+        </div>
+      )}
+
+      {!state.isNew && (
+        <div className="field">
+          <label>Overleaf project</label>
+          <div>
+            <code>{state.projectId}</code>
+          </div>
+        </div>
+      )}
+
+      <div className="row">
+        <div className="field">
+          <label htmlFor="ed-owner">
+            Owner <span className="required" aria-hidden="true">*</span>
+          </label>
+          <input
+            id="ed-owner"
+            className="mono"
+            type="text"
+            autoComplete="off"
+            spellCheck={false}
+            value={state.repo.owner}
+            placeholder="username-or-org"
+            onChange={(e) => setRepo({ owner: e.target.value })}
+          />
+        </div>
+        <div className="field">
+          <label htmlFor="ed-repo">
+            Repository <span className="required" aria-hidden="true">*</span>
+          </label>
+          <input
+            id="ed-repo"
+            className="mono"
+            type="text"
+            autoComplete="off"
+            spellCheck={false}
+            value={state.repo.repo}
+            placeholder="repo-name"
+            onChange={(e) => setRepo({ repo: e.target.value })}
+          />
+        </div>
+      </div>
+
+      <div className="row">
+        <div className="field">
+          <label htmlFor="ed-branch">Branch</label>
+          <input
+            id="ed-branch"
+            className="mono"
+            type="text"
+            autoComplete="off"
+            spellCheck={false}
+            value={state.repo.branch}
+            placeholder="main"
+            onChange={(e) => setRepo({ branch: e.target.value })}
+          />
+        </div>
+        <div className="field">
+          <label htmlFor="ed-dir">Target directory</label>
+          <input
+            id="ed-dir"
+            className="mono"
+            type="text"
+            autoComplete="off"
+            spellCheck={false}
+            value={state.repo.targetDir ?? ''}
+            placeholder="paper"
+            onChange={(e) => setRepo({ targetDir: e.target.value })}
+          />
+        </div>
+      </div>
+
+      <div className="field">
+        <label htmlFor="ed-token">
+          GitHub token <span className="required" aria-hidden="true">*</span>
+        </label>
+        <div className="token-row">
+          <input
+            id="ed-token"
+            className="mono"
+            type={showToken ? 'text' : 'password'}
+            autoComplete="off"
+            spellCheck={false}
+            value={state.token}
+            placeholder="github_pat_…"
+            onChange={(e) => onChange({ ...state, token: e.target.value })}
+          />
+          <button
+            type="button"
+            className="toggle"
+            aria-pressed={showToken}
+            aria-label={showToken ? 'Hide token' : 'Show token'}
+            onClick={() => setShowToken((v) => !v)}
+          >
+            {showToken ? 'Hide' : 'Show'}
+          </button>
+        </div>
+        <div className="hint">
+          Use a <strong>fine-grained personal access token</strong> scoped to{' '}
+          <em>only this repository</em>, with <code>Contents: Read and write</code>{' '}
+          and <code>Metadata: Read</code> permissions.
+        </div>
+      </div>
+
+      <div className="checkbox-row">
+        <input
+          id="ed-deletions"
+          type="checkbox"
+          checked={state.repo.includeDeletions}
+          onChange={(e) => setRepo({ includeDeletions: e.target.checked })}
+        />
+        <label htmlFor="ed-deletions">
+          Include deletions by default
+          <div className="hint">
+            When enabled, files present in the repo but missing from the source
+            are removed (only inside the target directory). Toggleable per
+            commit in the popup.
+          </div>
+        </label>
+      </div>
+
+      <div className="field" style={{ marginTop: 18 }}>
+        <label htmlFor="ed-ignore">Ignore patterns (one per line)</label>
+        <textarea
+          id="ed-ignore"
+          value={state.ignoreText}
+          onChange={(e) => onChange({ ...state, ignoreText: e.target.value })}
+          spellCheck={false}
+        />
+        <div className="hint">
+          Glob-like patterns matched against source paths. <code>*</code> for any
+          non-slash chars, <code>**</code> across slashes. <code>#</code> lines
+          are comments.
+        </div>
+      </div>
+
+      {error && (
+        <div className="banner error" role="alert">
+          {error}
+        </div>
+      )}
 
       <div className="actions">
-        <button
-          type="button"
-          className="button primary"
-          onClick={onSave}
-          disabled={save.kind === 'saving'}
-          aria-busy={save.kind === 'saving'}
-        >
-          {save.kind === 'saving' ? (
-            <>
-              <span className="spinner" aria-hidden="true" />
-              Saving…
-            </>
-          ) : (
-            'Save settings'
-          )}
+        <button type="button" className="button primary" onClick={onSave}>
+          {state.isNew ? 'Add mapping' : 'Save changes'}
         </button>
-        <button type="button" className="button" onClick={onReset}>
-          Reset to defaults
+        <button type="button" className="button" onClick={onCancel}>
+          Cancel
         </button>
-        <span
-          className={
-            save.kind === 'saved'
-              ? 'save-status ok'
-              : save.kind === 'error'
-                ? 'save-status err'
-                : 'save-status'
-          }
-          role="status"
-          aria-live="polite"
-          aria-atomic="true"
-        >
-          {save.kind === 'saved' && 'Saved.'}
-          {save.kind === 'error' && `Save failed: ${save.message}`}
-        </span>
       </div>
     </div>
   );

@@ -7,6 +7,13 @@ export type RepoConfig = {
   ignorePatterns: string[];
 };
 
+export type ProjectLink = {
+  repo: RepoConfig;
+  token: string;
+};
+
+export type ProjectLinkMap = Record<string, ProjectLink>;
+
 export type ProjectFile = {
   path: string;
   content: Uint8Array;

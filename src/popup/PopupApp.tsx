@@ -1,25 +1,31 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CommitResult,
+  ConnectionTestResult,
   DiffItem,
   DiffSummary,
   ExperimentalConfig,
   GitHubTreeItem,
-  ProjectFile,
+  ProjectLink,
+  ProjectLinkMap,
   RepoConfig,
 } from '../shared/types';
-import { DEFAULT_EXPERIMENTAL_CONFIG } from '../shared/constants';
+import { DEFAULT_EXPERIMENTAL_CONFIG, DEFAULT_REPO_CONFIG } from '../shared/constants';
 import {
+  clearLegacySingleConfig,
   getExperimentalConfig,
-  getRepoConfig,
+  getProjectLinkMap,
   isConfigured,
+  isLinkComplete,
+  readLegacySingleConfig,
+  setProjectLink,
 } from '../storage/extensionStorage';
-import { getToken } from '../github/auth';
 import { ZipError } from '../zip/zipReader';
 import {
   GitHubApiError,
   GitHubClient,
   formatGitHubError,
+  testConnection,
 } from '../github/githubClient';
 import { computeDiff, hasActionableChanges, summarize } from '../diff/diffEngine';
 import { CommitError, createCommit, type CommitProgress } from '../github/commitEngine';
@@ -41,7 +47,15 @@ import { LiveSyncError, recoveryActionForLiveSyncError } from '../overleaf/live/
 
 type Phase =
   | { kind: 'loading' }
-  | { kind: 'unconfigured'; reason: 'no-token' | 'no-repo' | 'both' }
+  | { kind: 'unconfigured' }
+  | {
+      kind: 'link-setup';
+      projectId: string;
+      initialRepo: RepoConfig;
+      initialToken: string;
+      fromLegacy: boolean;
+    }
+  | { kind: 'pick-project' }
   | { kind: 'ready' }
   | { kind: 'analyzing'; label: string; step: string }
   | {
@@ -60,8 +74,9 @@ type Phase =
 const DEFAULT_COMMIT_MESSAGE = 'Sync Overleaf project';
 
 export function Popup(): React.ReactElement {
-  const [config, setConfig] = useState<RepoConfig | null>(null);
-  const [token, setToken] = useState<string | null>(null);
+  const [linkMap, setLinkMap] = useState<ProjectLinkMap>({});
+  const [activeLink, setActiveLink] = useState<ProjectLink | null>(null);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [experimental, setExperimental] = useState<ExperimentalConfig>(
     DEFAULT_EXPERIMENTAL_CONFIG,
   );
@@ -73,30 +88,42 @@ export function Popup(): React.ReactElement {
   useEffect(() => {
     void (async () => {
       try {
-        const [c, t, e, ctx] = await Promise.all([
-          getRepoConfig(),
-          getToken(),
-          getExperimentalConfig(),
+        const [ctx, map, e, legacy] = await Promise.all([
           getActiveOverleafProjectContext(),
+          getProjectLinkMap(),
+          getExperimentalConfig(),
+          readLegacySingleConfig(),
         ]);
-        setConfig(c);
-        setToken(t);
-        setExperimental(e);
         setOverleafContext(ctx);
-        if (!t && !isConfigured(c)) {
-          setPhase({ kind: 'unconfigured', reason: 'both' });
-        } else if (!t) {
-          setPhase({ kind: 'unconfigured', reason: 'no-token' });
-        } else if (!isConfigured(c)) {
-          setPhase({ kind: 'unconfigured', reason: 'no-repo' });
+        setLinkMap(map);
+        setExperimental(e);
+
+        if (ctx) {
+          const existing = map[ctx.projectId];
+          if (existing && isLinkComplete(existing)) {
+            setActiveLink(existing);
+            setActiveProjectId(ctx.projectId);
+            setPhase({ kind: 'ready' });
+          } else {
+            const base = existing ?? (legacy ?? null);
+            setPhase({
+              kind: 'link-setup',
+              projectId: ctx.projectId,
+              initialRepo: base?.repo ?? { ...DEFAULT_REPO_CONFIG },
+              initialToken: base?.token ?? '',
+              fromLegacy: !existing && legacy !== null,
+            });
+          }
+        } else if (Object.keys(map).length > 0) {
+          setPhase({ kind: 'pick-project' });
         } else {
-          setPhase({ kind: 'ready' });
+          setPhase({ kind: 'unconfigured' });
         }
       } catch (e) {
         setPhase({
           kind: 'error',
           message: e instanceof Error ? e.message : String(e),
-          allowManualFallback: true,
+          allowManualFallback: false,
         });
       }
     })();
@@ -113,27 +140,54 @@ export function Popup(): React.ReactElement {
     if (fileInputRef.current) fileInputRef.current.value = '';
   }, []);
 
+  const onSaveLink = useCallback(
+    async (projectId: string, repo: RepoConfig, token: string, fromLegacy: boolean) => {
+      const link: ProjectLink = { repo, token };
+      await setProjectLink(projectId, link);
+      if (fromLegacy) await clearLegacySingleConfig();
+      setLinkMap((prev) => ({ ...prev, [projectId]: link }));
+      setActiveLink(link);
+      setActiveProjectId(projectId);
+      setPhase({ kind: 'ready' });
+    },
+    [],
+  );
+
+  const onPickProject = useCallback(
+    (projectId: string) => {
+      const link = linkMap[projectId];
+      if (!link) return;
+      setActiveLink(link);
+      setActiveProjectId(projectId);
+      setPhase({ kind: 'ready' });
+    },
+    [linkMap],
+  );
+
   const beginPreview = useCallback(
     async (snapshot: SourceSnapshot) => {
-      if (!config || !token) return;
+      if (!activeLink) return;
       try {
         setPhase({
           kind: 'analyzing',
           label: snapshot.displayName,
           step: 'Fetching GitHub state…',
         });
-        const { baseCommitSha, baseTreeSha, treeItems } = await fetchGitHubTree(token, config);
+        const { baseCommitSha, baseTreeSha, treeItems } = await fetchGitHubTree(
+          activeLink.token,
+          activeLink.repo,
+        );
         setPhase({
           kind: 'analyzing',
           label: snapshot.displayName,
           step: 'Computing diff…',
         });
-        const diffs = await computeDiff(snapshot.files, treeItems, config);
+        const diffs = await computeDiff(snapshot.files, treeItems, activeLink.repo);
         setPhase({
           kind: 'preview',
           snapshot,
           diffs,
-          includeDeletions: config.includeDeletions,
+          includeDeletions: activeLink.repo.includeDeletions,
           commitMessage: DEFAULT_COMMIT_MESSAGE,
           baseCommitSha,
           baseTreeSha,
@@ -149,11 +203,11 @@ export function Popup(): React.ReactElement {
         });
       }
     },
-    [config, token],
+    [activeLink],
   );
 
   const handleAutomaticFetch = useCallback(async () => {
-    if (!overleafContext || !config || !token) return;
+    if (!overleafContext || !activeLink) return;
     setPhase({
       kind: 'analyzing',
       label: `Overleaf project ${overleafContext.projectId}`,
@@ -177,10 +231,10 @@ export function Popup(): React.ReactElement {
         allowManualFallback: true,
       });
     }
-  }, [overleafContext, config, token, beginPreview]);
+  }, [overleafContext, activeLink, beginPreview]);
 
   const handleLiveReadOnly = useCallback(async () => {
-    if (!overleafContext || !config || !token) return;
+    if (!overleafContext || !activeLink) return;
     setPhase({
       kind: 'analyzing',
       label: `Overleaf project ${overleafContext.projectId}`,
@@ -216,11 +270,11 @@ export function Popup(): React.ReactElement {
         allowManualFallback: true,
       });
     }
-  }, [overleafContext, config, token, experimental, beginPreview]);
+  }, [overleafContext, activeLink, experimental, beginPreview]);
 
   const handleManualFile = useCallback(
     async (file: File) => {
-      if (!config || !token) return;
+      if (!activeLink) return;
       setPhase({ kind: 'analyzing', label: file.name, step: 'Reading ZIP…' });
       try {
         const snapshot = await sourceFromManualZip(file);
@@ -236,7 +290,7 @@ export function Popup(): React.ReactElement {
         });
       }
     },
-    [config, token, beginPreview],
+    [activeLink, beginPreview],
   );
 
   const onFileChange = useCallback(
@@ -248,7 +302,7 @@ export function Popup(): React.ReactElement {
   );
 
   const onCommit = useCallback(async () => {
-    if (phase.kind !== 'preview' || !config || !token) return;
+    if (phase.kind !== 'preview' || !activeLink) return;
     if (!phase.commitMessage.trim()) return;
     // Defense in depth: a snapshot with fetch warnings is potentially
     // incomplete. Files that failed to fetch will appear as "deleted" in
@@ -261,14 +315,14 @@ export function Popup(): React.ReactElement {
     if (!hasActionableChanges(phase.diffs, effectiveIncludeDeletions)) return;
 
     const effectiveConfig: RepoConfig = {
-      ...config,
+      ...activeLink.repo,
       includeDeletions: effectiveIncludeDeletions,
     };
 
     setPhase({ kind: 'committing', progress: 'Starting commit…' });
     try {
       const result = await createCommit(
-        token,
+        activeLink.token,
         effectiveConfig,
         phase.snapshot.files,
         phase.diffs,
@@ -284,7 +338,7 @@ export function Popup(): React.ReactElement {
       else msg = e instanceof Error ? e.message : String(e);
       setPhase({ kind: 'error', message: msg, allowManualFallback: false });
     }
-  }, [phase, config, token]);
+  }, [phase, activeLink]);
 
   return (
     <div className="popup">
@@ -308,12 +362,32 @@ export function Popup(): React.ReactElement {
         )}
 
         {phase.kind === 'unconfigured' && (
-          <UnconfiguredView reason={phase.reason} onOpenOptions={openOptions} />
+          <UnconfiguredView onOpenOptions={openOptions} />
         )}
 
-        {phase.kind === 'ready' && config && (
+        {phase.kind === 'link-setup' && (
+          <LinkSetupView
+            projectId={phase.projectId}
+            initialRepo={phase.initialRepo}
+            initialToken={phase.initialToken}
+            fromLegacy={phase.fromLegacy}
+            onSave={onSaveLink}
+            onOpenOptions={openOptions}
+          />
+        )}
+
+        {phase.kind === 'pick-project' && (
+          <PickProjectView
+            linkMap={linkMap}
+            onPick={onPickProject}
+            onOpenOptions={openOptions}
+          />
+        )}
+
+        {phase.kind === 'ready' && activeLink && (
           <ReadyView
-            config={config}
+            config={activeLink.repo}
+            projectId={activeProjectId}
             overleafContext={overleafContext}
             experimental={experimental}
             onAutomatic={handleAutomaticFetch}
@@ -333,9 +407,10 @@ export function Popup(): React.ReactElement {
           </div>
         )}
 
-        {phase.kind === 'preview' && config && (
+        {phase.kind === 'preview' && activeLink && (
           <PreviewView
-            config={config}
+            config={activeLink.repo}
+            projectId={activeProjectId}
             phase={phase}
             onChange={(next) => setPhase(next)}
             onCommit={onCommit}
@@ -408,21 +483,17 @@ function describeProgress(p: CommitProgress): string {
 }
 
 function UnconfiguredView({
-  reason,
   onOpenOptions,
 }: {
-  reason: 'no-token' | 'no-repo' | 'both';
   onOpenOptions: () => void;
 }): React.ReactElement {
-  const message =
-    reason === 'no-token'
-      ? 'GitHub token is not set.'
-      : reason === 'no-repo'
-        ? 'GitHub repository is not configured.'
-        : 'GitHub token and repository are not configured.';
   return (
     <>
-      <div className="banner warning">{message}</div>
+      <div className="banner warning">
+        No projects are linked yet. Open an Overleaf project tab
+        (https://www.overleaf.com/project/…) to link it to a GitHub repo, or add
+        a mapping manually in Options.
+      </div>
       <button className="button primary full" type="button" onClick={onOpenOptions}>
         Open Options
       </button>
@@ -430,8 +501,264 @@ function UnconfiguredView({
   );
 }
 
+function LinkSetupView({
+  projectId,
+  initialRepo,
+  initialToken,
+  fromLegacy,
+  onSave,
+  onOpenOptions,
+}: {
+  projectId: string;
+  initialRepo: RepoConfig;
+  initialToken: string;
+  fromLegacy: boolean;
+  onSave: (
+    projectId: string,
+    repo: RepoConfig,
+    token: string,
+    fromLegacy: boolean,
+  ) => Promise<void>;
+  onOpenOptions: () => void;
+}): React.ReactElement {
+  const [repo, setRepo] = useState<RepoConfig>(initialRepo);
+  const [token, setTokenState] = useState<string>(initialToken);
+  const [showToken, setShowToken] = useState<boolean>(false);
+  const [test, setTest] = useState<
+    { kind: 'idle' } | { kind: 'running' } | { kind: 'done'; result: ConnectionTestResult }
+  >({ kind: 'idle' });
+  const [saving, setSaving] = useState<boolean>(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const trimmedRepo: RepoConfig = {
+    ...repo,
+    owner: repo.owner.trim(),
+    repo: repo.repo.trim(),
+    branch: repo.branch.trim() || 'main',
+    targetDir: (repo.targetDir ?? '').trim(),
+  };
+  const canSave = isConfigured(trimmedRepo) && token.trim().length > 0 && !saving;
+
+  const onTest = async () => {
+    setTest({ kind: 'running' });
+    const result = await testConnection(token.trim(), trimmedRepo);
+    setTest({ kind: 'done', result });
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await onSave(projectId, trimmedRepo, token.trim(), fromLegacy);
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e));
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <section className="mode-section">
+        <h2 className="mode-title">
+          <span className="mode-badge stable">Setup</span>
+          Link this Overleaf project to a GitHub repo
+        </h2>
+        <div className="muted">
+          Project ID: <code>{projectId}</code>
+        </div>
+        {fromLegacy && (
+          <div className="banner success">
+            Pre-filled from your previous single-repo setup. Save to attach it to
+            this project; your old single config is then migrated.
+          </div>
+        )}
+
+        <div className="setup-form">
+          <label htmlFor="su-owner">Owner</label>
+          <input
+            id="su-owner"
+            type="text"
+            autoComplete="off"
+            spellCheck={false}
+            value={repo.owner}
+            placeholder="username-or-org"
+            onChange={(e) => setRepo({ ...repo, owner: e.target.value })}
+          />
+
+          <label htmlFor="su-repo">Repository</label>
+          <input
+            id="su-repo"
+            type="text"
+            autoComplete="off"
+            spellCheck={false}
+            value={repo.repo}
+            placeholder="repo-name"
+            onChange={(e) => setRepo({ ...repo, repo: e.target.value })}
+          />
+
+          <div className="row" style={{ gap: 8 }}>
+            <div style={{ flex: 1 }}>
+              <label htmlFor="su-branch">Branch</label>
+              <input
+                id="su-branch"
+                type="text"
+                autoComplete="off"
+                spellCheck={false}
+                value={repo.branch}
+                placeholder="main"
+                onChange={(e) => setRepo({ ...repo, branch: e.target.value })}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label htmlFor="su-dir">Target dir</label>
+              <input
+                id="su-dir"
+                type="text"
+                autoComplete="off"
+                spellCheck={false}
+                value={repo.targetDir ?? ''}
+                placeholder="(optional)"
+                onChange={(e) => setRepo({ ...repo, targetDir: e.target.value })}
+              />
+            </div>
+          </div>
+
+          <label htmlFor="su-token">GitHub token</label>
+          <div className="row" style={{ gap: 6 }}>
+            <input
+              id="su-token"
+              type={showToken ? 'text' : 'password'}
+              autoComplete="off"
+              spellCheck={false}
+              value={token}
+              placeholder="github_pat_…"
+              style={{ flex: 1 }}
+              onChange={(e) => setTokenState(e.target.value)}
+            />
+            <button
+              type="button"
+              className="button"
+              aria-pressed={showToken}
+              onClick={() => setShowToken((v) => !v)}
+            >
+              {showToken ? 'Hide' : 'Show'}
+            </button>
+          </div>
+          <div className="muted">
+            Fine-grained PAT scoped to <em>only this repository</em> —{' '}
+            <code>Contents: RW</code>, <code>Metadata: R</code>. Stored locally.
+          </div>
+        </div>
+
+        <div className="row" style={{ gap: 8, marginTop: 4 }}>
+          <button
+            type="button"
+            className="button"
+            onClick={onTest}
+            disabled={test.kind === 'running' || !isConfigured(trimmedRepo) || token.trim().length === 0}
+          >
+            {test.kind === 'running' ? (
+              <>
+                <span className="spinner" aria-hidden="true" />
+                Testing…
+              </>
+            ) : (
+              'Test connection'
+            )}
+          </button>
+          <button
+            type="button"
+            className="button primary"
+            onClick={save}
+            disabled={!canSave}
+            style={{ flex: 1 }}
+          >
+            {saving ? 'Saving…' : 'Save & continue'}
+          </button>
+        </div>
+
+        {test.kind === 'done' && (
+          <div
+            className={`banner ${test.result.ok ? 'success' : 'error'}`}
+            role={test.result.ok ? 'status' : 'alert'}
+          >
+            {test.result.ok
+              ? `Connection OK${test.result.user ? ` as ${test.result.user.login}` : ''}.`
+              : `Connection failed: ${test.result.error ?? 'unknown error'}`}
+          </div>
+        )}
+        {saveError && (
+          <div className="banner error" role="alert">
+            Save failed: {saveError}
+          </div>
+        )}
+      </section>
+
+      <button className="button full" type="button" onClick={onOpenOptions}>
+        Manage all mappings in Options
+      </button>
+    </>
+  );
+}
+
+function PickProjectView({
+  linkMap,
+  onPick,
+  onOpenOptions,
+}: {
+  linkMap: ProjectLinkMap;
+  onPick: (projectId: string) => void;
+  onOpenOptions: () => void;
+}): React.ReactElement {
+  const entries = Object.entries(linkMap);
+  const [selected, setSelected] = useState<string>(entries[0]?.[0] ?? '');
+
+  return (
+    <>
+      <section className="mode-section">
+        <h2 className="mode-title">
+          <span className="mode-badge fallback">No tab</span>
+          No Overleaf project tab open
+        </h2>
+        <div className="muted">
+          Pick which linked project's GitHub repo to target for a manual ZIP
+          upload, or open an Overleaf project tab for automatic snapshot.
+        </div>
+        <div className="setup-form" style={{ marginTop: 4 }}>
+          <label htmlFor="pick">Linked project</label>
+          <select
+            id="pick"
+            value={selected}
+            onChange={(e) => setSelected(e.target.value)}
+          >
+            {entries.map(([pid, link]) => (
+              <option key={pid} value={pid}>
+                {pid} → {link.repo.owner}/{link.repo.repo}
+              </option>
+            ))}
+          </select>
+        </div>
+        <button
+          className="button primary full"
+          type="button"
+          disabled={!selected}
+          onClick={() => onPick(selected)}
+          style={{ marginTop: 4 }}
+        >
+          Continue with this repo
+        </button>
+      </section>
+
+      <button className="button full" type="button" onClick={onOpenOptions}>
+        Manage all mappings in Options
+      </button>
+    </>
+  );
+}
+
 function ReadyView({
   config,
+  projectId,
   overleafContext,
   experimental,
   onAutomatic,
@@ -440,6 +767,7 @@ function ReadyView({
   inputRef,
 }: {
   config: RepoConfig;
+  projectId: string | null;
   overleafContext: OverleafProjectContext | null;
   experimental: ExperimentalConfig;
   onAutomatic: () => void;
@@ -449,7 +777,7 @@ function ReadyView({
 }): React.ReactElement {
   return (
     <>
-      <RepoSummary config={config} />
+      <RepoSummary config={config} projectId={projectId} />
 
       <section className="mode-section">
         <h2 className="mode-title">
@@ -473,9 +801,8 @@ function ReadyView({
           </>
         ) : (
           <div className="muted">
-            No active Overleaf project tab detected. Open an Overleaf project tab
-            (https://www.overleaf.com/project/…) to use automatic snapshot, or
-            upload a ZIP below.
+            No active Overleaf project tab. Automatic snapshot needs the project
+            tab open; you can still upload a ZIP below for this repo.
           </div>
         )}
       </section>
@@ -551,9 +878,21 @@ function ReadyView({
   );
 }
 
-function RepoSummary({ config }: { config: RepoConfig }): React.ReactElement {
+function RepoSummary({
+  config,
+  projectId,
+}: {
+  config: RepoConfig;
+  projectId: string | null;
+}): React.ReactElement {
   return (
     <div className="repo-summary">
+      {projectId && (
+        <>
+          <span className="k">Project</span>
+          <code>{projectId}</code>
+        </>
+      )}
       <span className="k">Repo</span>
       <code>
         {config.owner}/{config.repo}
@@ -585,12 +924,14 @@ function modeLabel(mode: SourceMode): string {
 
 function PreviewView({
   config,
+  projectId,
   phase,
   onChange,
   onCommit,
   onRestart,
 }: {
   config: RepoConfig;
+  projectId: string | null;
   phase: Extract<Phase, { kind: 'preview' }>;
   onChange: (p: Phase) => void;
   onCommit: () => void;
@@ -622,7 +963,7 @@ function PreviewView({
 
   return (
     <>
-      <RepoSummary config={config} />
+      <RepoSummary config={config} projectId={projectId} />
       <div className="muted">
         Source: <strong>{modeLabel(phase.snapshot.mode)}</strong>{' '}
         <code>{phase.snapshot.displayName}</code>

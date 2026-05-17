@@ -1,8 +1,10 @@
 import type { ExperimentalConfig, RepoConfig } from './types';
 
 export const STORAGE_KEYS = {
+  // legacy — read-only, consumed once by the per-project migration
   GITHUB_TOKEN: 'github_token',
   REPO_CONFIG: 'repo_config',
+  PROJECT_LINKS: 'project_links',
   EXPERIMENTAL_CONFIG: 'experimental_config',
 } as const;
 

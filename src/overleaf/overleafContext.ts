@@ -27,6 +27,15 @@ export function extractOverleafProjectIdFromUrl(
   return id;
 }
 
+// Accept either a raw Overleaf project ID or a pasted project URL. Used by the
+// Options "Add mapping" form so the user can paste whatever they have on hand.
+export function normalizeOverleafProjectId(input: string): string | null {
+  const trimmed = input.trim();
+  if (trimmed.length === 0) return null;
+  if (PROJECT_ID_REGEX.test(trimmed)) return trimmed;
+  return extractOverleafProjectIdFromUrl(trimmed);
+}
+
 export async function getActiveOverleafProjectContext(): Promise<OverleafProjectContext | null> {
   if (typeof chrome === 'undefined' || !chrome.tabs?.query) return null;
   try {
