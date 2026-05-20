@@ -543,6 +543,25 @@ code {
   opacity: 0.65;
 }
 
+.experimental-suboptions {
+  margin-top: 4px;
+  padding-left: 14px;
+  border-left: 2px solid color-mix(in srgb, var(--warning-text), transparent 60%);
+  animation: ofs-disclose 200ms ease-out;
+  transform-origin: top left;
+}
+
+@keyframes ofs-disclose {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 /* ── Reduced motion ────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
@@ -555,5 +574,8 @@ code {
   .field input,
   .field textarea {
     transition: none;
+  }
+  .experimental-suboptions {
+    animation: none;
   }
 }

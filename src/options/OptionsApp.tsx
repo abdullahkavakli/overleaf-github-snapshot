@@ -265,6 +265,8 @@ export function Options(): React.ReactElement {
             id="experimentalLiveSyncEnabled"
             type="checkbox"
             checked={experimental.experimentalLiveSyncEnabled}
+            aria-controls="experimental-suboptions"
+            aria-expanded={experimental.experimentalLiveSyncEnabled}
             onChange={(e) =>
               setExperimental({
                 ...experimental,
@@ -275,173 +277,163 @@ export function Options(): React.ReactElement {
           <label htmlFor="experimentalLiveSyncEnabled">
             Enable experimental live sync
             <div className="hint">
-              Master switch. When off, no experimental UI is shown in the popup
-              and no live protocol code runs.
+              Master switch. When off, the experimental options below are
+              hidden, no Live Sync UI is shown in the popup, and no live
+              protocol code runs.
             </div>
           </label>
         </div>
 
-        <div className="checkbox-row" style={{ marginTop: 14 }}>
-          <input
-            id="liveReadOnlyPullEnabled"
-            type="checkbox"
-            disabled={!experimental.experimentalLiveSyncEnabled}
-            checked={experimental.liveReadOnlyPullEnabled}
-            onChange={(e) =>
-              setExperimental({
-                ...experimental,
-                liveReadOnlyPullEnabled: e.target.checked,
-              })
-            }
-          />
-          <label htmlFor="liveReadOnlyPullEnabled">
-            Enable read-only live pull
-            <div className="hint">
-              Read Overleaf project files via the live session instead of the
-              ZIP export. Read-only — never modifies Overleaf.
+        {experimental.experimentalLiveSyncEnabled && (
+          <div id="experimental-suboptions" className="experimental-suboptions">
+            <div className="checkbox-row" style={{ marginTop: 14 }}>
+              <input
+                id="liveReadOnlyPullEnabled"
+                type="checkbox"
+                checked={experimental.liveReadOnlyPullEnabled}
+                onChange={(e) =>
+                  setExperimental({
+                    ...experimental,
+                    liveReadOnlyPullEnabled: e.target.checked,
+                  })
+                }
+              />
+              <label htmlFor="liveReadOnlyPullEnabled">
+                Enable read-only live pull
+                <div className="hint">
+                  Read Overleaf project files via the live session instead of the
+                  ZIP export. Read-only — never modifies Overleaf.
+                </div>
+              </label>
             </div>
-          </label>
-        </div>
 
-        <div className="checkbox-row" style={{ marginTop: 14 }}>
-          <input
-            id="overleafWriteBackEnabled"
-            type="checkbox"
-            disabled={!experimental.experimentalLiveSyncEnabled}
-            checked={experimental.overleafWriteBackEnabled}
-            onChange={(e) =>
-              setExperimental({
-                ...experimental,
-                overleafWriteBackEnabled: e.target.checked,
-              })
-            }
-          />
-          <label htmlFor="overleafWriteBackEnabled">
-            Enable explicit Overleaf write-back
-            <div className="hint">
-              Allow pushing selected text files back to Overleaf with a typed
-              confirmation. Disabled by default. Conflicts are always blocked.
+            <div className="checkbox-row" style={{ marginTop: 14 }}>
+              <input
+                id="overleafWriteBackEnabled"
+                type="checkbox"
+                checked={experimental.overleafWriteBackEnabled}
+                onChange={(e) =>
+                  setExperimental({
+                    ...experimental,
+                    overleafWriteBackEnabled: e.target.checked,
+                  })
+                }
+              />
+              <label htmlFor="overleafWriteBackEnabled">
+                Enable explicit Overleaf write-back
+                <div className="hint">
+                  Allow pushing selected text files back to Overleaf with a typed
+                  confirmation. Disabled by default. Conflicts are always blocked.
+                </div>
+              </label>
             </div>
-          </label>
-        </div>
 
-        <div className="checkbox-row" style={{ marginTop: 14 }}>
-          <input
-            id="localReplicaEnabled"
-            type="checkbox"
-            disabled={!experimental.experimentalLiveSyncEnabled}
-            checked={experimental.localReplicaEnabled}
-            onChange={(e) =>
-              setExperimental({
-                ...experimental,
-                localReplicaEnabled: e.target.checked,
-              })
-            }
-          />
-          <label htmlFor="localReplicaEnabled">
-            Enable local replica prototype
-            <div className="hint">
-              Choose a local folder to compare against Overleaf. Browser-only,
-              no background sync, no silent overwrites. Requires the File System
-              Access API.
+            <div className="checkbox-row" style={{ marginTop: 14 }}>
+              <input
+                id="localReplicaEnabled"
+                type="checkbox"
+                checked={experimental.localReplicaEnabled}
+                onChange={(e) =>
+                  setExperimental({
+                    ...experimental,
+                    localReplicaEnabled: e.target.checked,
+                  })
+                }
+              />
+              <label htmlFor="localReplicaEnabled">
+                Enable local replica prototype
+                <div className="hint">
+                  Choose a local folder to compare against Overleaf. Browser-only,
+                  no background sync, no silent overwrites. Requires the File System
+                  Access API.
+                </div>
+              </label>
             </div>
-          </label>
-        </div>
 
-        <div className="checkbox-row" style={{ marginTop: 14 }}>
-          <input
-            id="requireZipBackupBeforeWriteBack"
-            type="checkbox"
-            disabled={
-              !experimental.experimentalLiveSyncEnabled ||
-              !experimental.overleafWriteBackEnabled
-            }
-            checked={experimental.requireZipBackupBeforeWriteBack}
-            onChange={(e) =>
-              setExperimental({
-                ...experimental,
-                requireZipBackupBeforeWriteBack: e.target.checked,
-              })
-            }
-          />
-          <label htmlFor="requireZipBackupBeforeWriteBack">
-            Require ZIP backup before write-back
-            <div className="hint">
-              Fetch a fresh ZIP snapshot before writing any change to Overleaf.
-              Strongly recommended.
+            <div className="checkbox-row" style={{ marginTop: 14 }}>
+              <input
+                id="requireZipBackupBeforeWriteBack"
+                type="checkbox"
+                disabled={!experimental.overleafWriteBackEnabled}
+                checked={experimental.requireZipBackupBeforeWriteBack}
+                onChange={(e) =>
+                  setExperimental({
+                    ...experimental,
+                    requireZipBackupBeforeWriteBack: e.target.checked,
+                  })
+                }
+              />
+              <label htmlFor="requireZipBackupBeforeWriteBack">
+                Require ZIP backup before write-back
+                <div className="hint">
+                  Fetch a fresh ZIP snapshot before writing any change to Overleaf.
+                  Strongly recommended.
+                </div>
+              </label>
             </div>
-          </label>
-        </div>
 
-        <div className="checkbox-row" style={{ marginTop: 14 }}>
-          <input
-            id="requireConfirmationBeforeWriteBack"
-            type="checkbox"
-            disabled={
-              !experimental.experimentalLiveSyncEnabled ||
-              !experimental.overleafWriteBackEnabled
-            }
-            checked={experimental.requireConfirmationBeforeWriteBack}
-            onChange={(e) =>
-              setExperimental({
-                ...experimental,
-                requireConfirmationBeforeWriteBack: e.target.checked,
-              })
-            }
-          />
-          <label htmlFor="requireConfirmationBeforeWriteBack">
-            Require confirmation before each write-back
-            <div className="hint">
-              Show the changed file list and require explicit typed confirmation
-              before any write. Strongly recommended.
+            <div className="checkbox-row" style={{ marginTop: 14 }}>
+              <input
+                id="requireConfirmationBeforeWriteBack"
+                type="checkbox"
+                disabled={!experimental.overleafWriteBackEnabled}
+                checked={experimental.requireConfirmationBeforeWriteBack}
+                onChange={(e) =>
+                  setExperimental({
+                    ...experimental,
+                    requireConfirmationBeforeWriteBack: e.target.checked,
+                  })
+                }
+              />
+              <label htmlFor="requireConfirmationBeforeWriteBack">
+                Require confirmation before each write-back
+                <div className="hint">
+                  Show the changed file list and require explicit typed confirmation
+                  before any write. Strongly recommended.
+                </div>
+              </label>
             </div>
-          </label>
-        </div>
 
-        <div className="checkbox-row" style={{ marginTop: 14 }}>
-          <input
-            id="allowBinaryWriteBack"
-            type="checkbox"
-            disabled={
-              !experimental.experimentalLiveSyncEnabled ||
-              !experimental.overleafWriteBackEnabled
-            }
-            checked={experimental.allowBinaryWriteBack}
-            onChange={(e) =>
-              setExperimental({
-                ...experimental,
-                allowBinaryWriteBack: e.target.checked,
-              })
-            }
-          />
-          <label htmlFor="allowBinaryWriteBack">
-            Allow binary file write-back
-            <div className="hint">
-              Off by default. Write-back is generally limited to text source
-              files. Binaries are riskier to overwrite.
+            <div className="checkbox-row" style={{ marginTop: 14 }}>
+              <input
+                id="allowBinaryWriteBack"
+                type="checkbox"
+                disabled={!experimental.overleafWriteBackEnabled}
+                checked={experimental.allowBinaryWriteBack}
+                onChange={(e) =>
+                  setExperimental({
+                    ...experimental,
+                    allowBinaryWriteBack: e.target.checked,
+                  })
+                }
+              />
+              <label htmlFor="allowBinaryWriteBack">
+                Allow binary file write-back
+                <div className="hint">
+                  Off by default. Write-back is generally limited to text source
+                  files. Binaries are riskier to overwrite.
+                </div>
+              </label>
             </div>
-          </label>
-        </div>
 
-        <div className="field" style={{ marginTop: 18 }}>
-          <label htmlFor="writeBackExts">Allowed write-back extensions</label>
-          <textarea
-            id="writeBackExts"
-            value={extText}
-            disabled={
-              !experimental.experimentalLiveSyncEnabled ||
-              !experimental.overleafWriteBackEnabled
-            }
-            onChange={(e) => setExtText(e.target.value)}
-            spellCheck={false}
-            style={{ minHeight: 110 }}
-          />
-          <div className="hint">
-            One extension per line. Defaults: <code>.tex</code>, <code>.bib</code>,{' '}
-            <code>.cls</code>, <code>.sty</code>, <code>.bst</code>, <code>.md</code>,{' '}
-            <code>.txt</code>.
+            <div className="field" style={{ marginTop: 18 }}>
+              <label htmlFor="writeBackExts">Allowed write-back extensions</label>
+              <textarea
+                id="writeBackExts"
+                value={extText}
+                disabled={!experimental.overleafWriteBackEnabled}
+                onChange={(e) => setExtText(e.target.value)}
+                spellCheck={false}
+                style={{ minHeight: 110 }}
+              />
+              <div className="hint">
+                One extension per line. Defaults: <code>.tex</code>, <code>.bib</code>,{' '}
+                <code>.cls</code>, <code>.sty</code>, <code>.bst</code>, <code>.md</code>,{' '}
+                <code>.txt</code>.
+              </div>
+            </div>
           </div>
-        </div>
+        )}
 
         <div className="actions" style={{ marginTop: 16 }}>
           <button
