@@ -52,7 +52,9 @@ The original MVP behavior remains as a fallback:
 - Open the extension popup.
 - Pick the ZIP — the popup runs the same diff/commit flow.
 
-Manual ZIP upload is **always available**, even if automatic fetch fails. The error UI keeps the ZIP picker visible so you can recover in one click.
+Starting with `v1.0.0`, the popup hides the **Manual ZIP upload** section by default whenever an Overleaf project tab is open, so the automatic route is the obvious first action. It appears automatically the moment the automatic fetch fails, and the error view also keeps an inline ZIP picker visible so you can recover in one click. With **no** Overleaf project tab open, the manual section is shown immediately — it's the only option in that flow.
+
+If you prefer the pre-1.0 behavior where the manual section is always visible, enable **Options → Popup display → Always show Manual ZIP upload**.
 
 ### C. Experimental — Overleaf Live Sync (off by default)
 
@@ -70,8 +72,6 @@ Each experimental capability still has its own settings toggle, so future revisi
 - Allowed write-back extensions (default `.tex`, `.bib`, `.cls`, `.sty`, `.bst`, `.md`, `.txt`)
 
 > **Important.** Live read-only depends on Overleaf's internal Socket.IO 0.9 protocol staying compatible. The stable ZIP route is always available as a fallback. If live read-only returns a snapshot with fetch warnings, the popup blocks deletion-style commits until warnings clear, so partial fetches cannot silently remove files from your GitHub branch.
-
-> **Tip.** If you install or update this extension while an Overleaf project tab is already open, **refresh the Overleaf tab once** so the new content-script bridge is loaded. The popup will tell you if the bridge isn't reachable.
 
 ## Local replica prototype (modules only — no UI yet)
 
@@ -96,6 +96,7 @@ The extension was designed with the following guarantees:
 - **No Overleaf cookie copying.** The extension never reads `document.cookie`, never requests the `chrome.cookies` permission, and never stores or transmits an Overleaf cookie. All Overleaf requests use `credentials: "include"` so the browser attaches its own session cookies — the extension code does not see them.
 - **No raw Overleaf credentials.** The extension does not ask for an Overleaf password, API token, or session string. There is no Overleaf login UI inside the extension.
 - **GitHub token isolation.** Each project's GitHub PAT is stored only in `chrome.storage.local` (per-project, inside the project-links map). It is only sent to `api.github.com`. The content script never receives it.
+- **Narrow permissions.** `storage`, `activeTab`, and `scripting` only. The `scripting` permission (added in `v1.0.0`) is used solely to re-inject the same overleaf.com content script the manifest already declares, into tabs that were opened before the extension was installed/updated — it grants no access beyond the host permissions below.
 - **Narrow host permissions.** `https://www.overleaf.com/*` and `https://api.github.com/*` only.
 - **No force push, ever.** The Git ref update always sends `force: false`. If the branch moved between preview and commit, the commit aborts cleanly.
 - **No destructive automatic sync.** All write-back actions, local-replica pulls, and Overleaf writes require explicit user gestures.
@@ -264,9 +265,8 @@ Vite watches sources and rebuilds `dist/`. Reload the extension in `chrome://ext
 
 1. Open **Options** and enable **Experimental Overleaf Live Sync** plus the specific capabilities you want.
 2. In the popup, the **Experimental Live Sync** section becomes visible.
-3. With an Overleaf project tab open and signed in, click **Live read-only pull**. The popup messages the content script on that tab; the content script opens a Socket.IO 0.9 channel to Overleaf, runs `joinProject` + `joinDoc` for every text doc, fetches static files over REST, and returns a complete snapshot to the diff/commit pipeline. If any doc or file fails, the snapshot carries warnings and the popup blocks deletion-style commits as a safety net.
-4. If you installed or updated the extension while the Overleaf tab was already open, **refresh that tab once** so the new content-script bridge loads. The popup will tell you with a typed error if the bridge isn't reachable.
-5. **Write-back** and **local replica** are still **not user-runnable in this build**. The settings toggles persist for future revisions; the modules exist; but no popup or options UI calls them yet. Write-back will be wired only after live read-only has proven reliable.
+3. With an Overleaf project tab open and signed in, click **Live read-only pull**. The popup messages the content script on that tab; the content script opens a Socket.IO 0.9 channel to Overleaf, runs `joinProject` + `joinDoc` for every text doc, fetches static files over REST, and returns a complete snapshot to the diff/commit pipeline. If any doc or file fails, the snapshot carries warnings and the popup blocks deletion-style commits as a safety net. If the Overleaf tab was opened before the extension was installed/updated, the popup auto-injects the content-script bridge into that tab on first use of live sync — no manual refresh needed (uses the `scripting` permission added in `v1.0.0`).
+4. **Write-back** and **local replica** are still **not user-runnable in this build**. The settings toggles persist for future revisions; the modules exist; but no popup or options UI calls them yet. Write-back will be wired only after live read-only has proven reliable.
 
 ## Manual testing checklist
 
@@ -278,7 +278,7 @@ User-runnable surfaces in this build:
 4. **ZIP endpoint changed** → typed `endpoint_changed`/`not_zip` error; manual fallback remains visible.
 5. **Experimental disabled** → no live sync UI visible.
 6. **Experimental enabled, Overleaf tab open and signed in** → live read-only pull connects via the content-script bridge, joinProject enumerates the tree, joinDoc reads every text document, REST fetches every static file, the popup shows the diff and commits to GitHub.
-7. **Experimental enabled but Overleaf tab needs refresh** (after extension install/update) → popup shows a typed `protocol_unavailable` error with recovery: *Refresh the Overleaf tab so the bridge loads.*
+7. **Experimental enabled, Overleaf tab opened before install/update** → first bridge ping fails internally; the extension auto-injects the content script via the `scripting` permission, retries the ping, and the pull succeeds without a manual tab refresh.
 8. **Live snapshot with fetch warnings** → deletion checkbox is disabled, deletions banner is suppressed, commit handler enforces `includeDeletions=false` as defense in depth.
 9. **Live read-only fails** → ZIP mode still works (use the green primary button instead).
 
