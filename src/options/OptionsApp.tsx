@@ -30,6 +30,14 @@ import {
 } from '../storage/extensionStorage';
 import { testConnection } from '../github/githubClient';
 import { normalizeOverleafProjectId } from '../overleaf/overleafContext';
+import {
+  fetchProjectMetadataViaBridge,
+  readDocViaBridge,
+} from '../overleaf/live/bridgeClient';
+import { flattenProjectTree } from '../overleaf/live/overleafProjectLoader';
+import { writeSelectedFilesBackToOverleaf } from '../overleaf/live/overleafWriteBack';
+import type { WriteBackResult } from '../overleaf/live/types';
+import { computeSha256 } from '../diff/fileHasher';
 
 type SaveState =
   | { kind: 'idle' }
@@ -489,6 +497,10 @@ export function Options(): React.ReactElement {
                 <code>.txt</code>.
               </div>
             </div>
+
+            {experimental.overleafWriteBackEnabled && (
+              <WriteBackDevPanel experimental={experimental} />
+            )}
           </div>
         )}
 
@@ -830,6 +842,239 @@ function MappingEditor({
           Cancel
         </button>
       </div>
+    </div>
+  );
+}
+
+// Developer harness for the experimental write-back path. Picks a doc
+// by path via the live bridge (LIVE_FETCH_PROJECT_METADATA -> doc id ->
+// LIVE_READ_DOC), lets the user edit, then runs the full
+// writeSelectedFilesBackToOverleaf orchestration so all the existing
+// safety gates (ZIP backup, conflict detector, OT, verify-after-write)
+// are exercised end-to-end. Honors the user's experimental config
+// (allowed extensions, allowBinary, requireZipBackup). Manual confirmation
+// is the click on "Write back" itself, so requireConfirmation is wired
+// to false here regardless of the persisted toggle.
+function WriteBackDevPanel({
+  experimental,
+}: {
+  experimental: ExperimentalConfig;
+}): React.ReactElement {
+  const [projectId, setProjectId] = useState<string>('');
+  const [docPath, setDocPath] = useState<string>('');
+  const [baseText, setBaseText] = useState<string>('');
+  const [newText, setNewText] = useState<string>('');
+  const [haveBase, setHaveBase] = useState<boolean>(false);
+  const [busy, setBusy] = useState<'idle' | 'reading' | 'writing'>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const [results, setResults] = useState<WriteBackResult[] | null>(null);
+
+  const trimmedProjectId = projectId.trim();
+  const trimmedPath = docPath.trim();
+
+  const onRead = async () => {
+    setError(null);
+    setResults(null);
+    setBusy('reading');
+    try {
+      const md = await fetchProjectMetadataViaBridge(trimmedProjectId);
+      if (!md.ok) {
+        throw new Error(`metadata: ${md.message}`);
+      }
+      const entries = flattenProjectTree(md.data.rootFolder);
+      const entry = entries.find((e) => e.path === trimmedPath && e.kind === 'doc');
+      if (!entry || !entry.id) {
+        const docs = entries.filter((e) => e.kind === 'doc').map((e) => e.path);
+        const sample = docs.slice(0, 8).join(', ');
+        throw new Error(
+          `No doc at path "${trimmedPath}". First docs in this project: ${sample}${docs.length > 8 ? '…' : ''}`,
+        );
+      }
+      const read = await readDocViaBridge(trimmedProjectId, entry.id);
+      if (!read.ok) {
+        throw new Error(`read: ${read.message}`);
+      }
+      setBaseText(read.data.text);
+      setNewText(read.data.text);
+      setHaveBase(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy('idle');
+    }
+  };
+
+  const onWrite = async () => {
+    setError(null);
+    setResults(null);
+    setBusy('writing');
+    try {
+      const enc = new TextEncoder();
+      const baseSha256 = await computeSha256(enc.encode(baseText));
+      const out = await writeSelectedFilesBackToOverleaf(
+        trimmedProjectId,
+        [{ path: trimmedPath, oldText: baseText, newText, baseSha256 }],
+        {
+          requireZipBackup: experimental.requireZipBackupBeforeWriteBack,
+          requireConfirmation: false,
+          allowedExtensions: experimental.allowedWriteBackExtensions,
+          allowBinary: experimental.allowBinaryWriteBack,
+        },
+      );
+      setResults(out);
+      // If the write succeeded, advance the base so the user can iterate.
+      const written = out.find((r) => r.path === trimmedPath && r.status === 'written');
+      if (written) setBaseText(newText);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy('idle');
+    }
+  };
+
+  const canRead =
+    trimmedProjectId.length > 0 && trimmedPath.length > 0 && busy === 'idle';
+  const canWrite = haveBase && newText !== baseText && busy === 'idle';
+
+  return (
+    <div
+      style={{
+        marginTop: 22,
+        padding: '14px 14px 16px',
+        border: '1px dashed var(--border)',
+        borderRadius: 8,
+      }}
+    >
+      <h3 style={{ margin: '0 0 4px', fontSize: 14 }}>
+        Developer write-back test
+      </h3>
+      <div className="hint" style={{ marginBottom: 12 }}>
+        Manual validation harness for the live write-back path. Reads a
+        single doc from Overleaf via the content-script bridge, lets you
+        edit it, then writes it back through the full safety pipeline
+        (ZIP backup, conflict detector, OT, verify-after-write). Honors
+        the toggles above. Use against a throwaway project until you have
+        confirmed the four outcomes behave correctly.
+      </div>
+
+      <div className="row">
+        <div className="field">
+          <label htmlFor="wb-pid">Overleaf project ID</label>
+          <input
+            id="wb-pid"
+            className="mono"
+            type="text"
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="e.g. 65ab…"
+            value={projectId}
+            onChange={(e) => setProjectId(e.target.value)}
+          />
+        </div>
+        <div className="field">
+          <label htmlFor="wb-path">Doc path</label>
+          <input
+            id="wb-path"
+            className="mono"
+            type="text"
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="main.tex"
+            value={docPath}
+            onChange={(e) => setDocPath(e.target.value)}
+          />
+        </div>
+      </div>
+
+      <div className="actions" style={{ marginTop: 8 }}>
+        <button
+          type="button"
+          className="button"
+          onClick={onRead}
+          disabled={!canRead}
+          aria-busy={busy === 'reading'}
+        >
+          {busy === 'reading' ? (
+            <>
+              <span className="spinner" aria-hidden="true" />
+              Reading…
+            </>
+          ) : (
+            'Read current'
+          )}
+        </button>
+      </div>
+
+      {haveBase && (
+        <>
+          <div className="field" style={{ marginTop: 14 }}>
+            <label htmlFor="wb-base">Base text (from Overleaf)</label>
+            <textarea
+              id="wb-base"
+              value={baseText}
+              readOnly
+              spellCheck={false}
+              style={{ minHeight: 120 }}
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="wb-new">New text (your edits)</label>
+            <textarea
+              id="wb-new"
+              value={newText}
+              onChange={(e) => setNewText(e.target.value)}
+              spellCheck={false}
+              style={{ minHeight: 160 }}
+            />
+          </div>
+          <div className="actions">
+            <button
+              type="button"
+              className="button primary"
+              onClick={onWrite}
+              disabled={!canWrite}
+              aria-busy={busy === 'writing'}
+            >
+              {busy === 'writing' ? (
+                <>
+                  <span className="spinner" aria-hidden="true" />
+                  Writing…
+                </>
+              ) : (
+                'Write back'
+              )}
+            </button>
+          </div>
+        </>
+      )}
+
+      {error && (
+        <div className="banner error" role="alert" style={{ marginTop: 10 }}>
+          {error}
+        </div>
+      )}
+
+      {results && (
+        <div style={{ marginTop: 10 }}>
+          {results.map((r, i) => (
+            <div
+              key={i}
+              className={`banner ${
+                r.status === 'written'
+                  ? 'success'
+                  : r.status === 'conflict' || r.status === 'failed'
+                    ? 'error'
+                    : 'info'
+              }`}
+              role={r.status === 'written' ? 'status' : 'alert'}
+              style={{ marginTop: 6 }}
+            >
+              <strong>{r.status}</strong> — <code>{r.path}</code>
+              {r.message ? `: ${r.message}` : ''}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
