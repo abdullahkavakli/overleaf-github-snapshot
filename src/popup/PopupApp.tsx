@@ -47,9 +47,22 @@ import {
   sourceFromManualZip,
   sourceFromOverleafZipRoute,
 } from '../sources/sourceManager';
+import { sourceFromGitHubBranch } from '../sources/sourceFromGitHubBranch';
 import type { SourceMode, SourceSnapshot } from '../sources/sourceTypes';
 import { fetchOverleafLiveSnapshot } from '../overleaf/live/liveSyncManager';
-import { LiveSyncError, recoveryActionForLiveSyncError } from '../overleaf/live/types';
+import {
+  fetchProjectMetadataViaBridge,
+  readDocViaBridge,
+} from '../overleaf/live/bridgeClient';
+import { flattenProjectTree } from '../overleaf/live/overleafProjectLoader';
+import { writeSelectedFilesBackToOverleaf } from '../overleaf/live/overleafWriteBack';
+import {
+  LiveSyncError,
+  recoveryActionForLiveSyncError,
+  type WriteBackCandidate,
+  type WriteBackResult,
+} from '../overleaf/live/types';
+import { computeSha256 } from '../diff/fileHasher';
 
 type Phase =
   | { kind: 'loading' }
@@ -403,6 +416,7 @@ export function Popup(): React.ReactElement {
         {phase.kind === 'ready' && activeLink && (
           <ReadyView
             config={activeLink.repo}
+            token={activeLink.token}
             projectId={activeProjectId}
             overleafContext={overleafContext}
             experimental={experimental}
@@ -779,6 +793,7 @@ function PickProjectView({
 
 function ReadyView({
   config,
+  token,
   projectId,
   overleafContext,
   experimental,
@@ -789,6 +804,7 @@ function ReadyView({
   inputRef,
 }: {
   config: RepoConfig;
+  token: string;
   projectId: string | null;
   overleafContext: OverleafProjectContext | null;
   experimental: ExperimentalConfig;
@@ -889,17 +905,313 @@ function ReadyView({
               </div>
             </>
           )}
-          {(experimental.overleafWriteBackEnabled || experimental.localReplicaEnabled) && (
+          {experimental.overleafWriteBackEnabled && overleafContext && (
+            <PullFromGitHubSection
+              projectId={overleafContext.projectId}
+              repoConfig={config}
+              token={token}
+              experimental={experimental}
+            />
+          )}
+          {experimental.overleafWriteBackEnabled && !overleafContext && (
             <div className="muted" style={{ marginTop: 8, fontSize: 11.5 }}>
-              Note: write-back and local-replica modules are present in the
-              codebase but have no popup UI in this build. Enabling their
-              flags has no visible effect yet — they are slated for a future
-              release.
+              Open the Overleaf project tab to enable <em>Pull from GitHub
+              into Overleaf</em>. Live write-back requires the project's
+              tab to be open (the content-script bridge writes from
+              overleaf.com origin).
+            </div>
+          )}
+          {experimental.localReplicaEnabled && (
+            <div className="muted" style={{ marginTop: 8, fontSize: 11.5 }}>
+              Note: the local-replica module is present in the codebase
+              but has no popup UI yet — its flag has no visible effect.
             </div>
           )}
         </section>
       )}
     </>
+  );
+}
+
+// Popup section for pulling GitHub HEAD into Overleaf via the live
+// bridge. Mirrors the Options "Pull from GitHub" dev panel but in the
+// popup's tighter visual budget and with an inline confirm step before
+// the destructive write. Local state only — no popup Phase change.
+function PullFromGitHubSection({
+  projectId,
+  repoConfig,
+  token,
+  experimental,
+}: {
+  projectId: string;
+  repoConfig: RepoConfig;
+  token: string;
+  experimental: ExperimentalConfig;
+}): React.ReactElement {
+  type Mode = 'idle' | 'confirming' | 'pulling' | 'done' | 'error';
+  const [mode, setMode] = useState<Mode>('idle');
+  const [step, setStep] = useState<string>('');
+  const [error, setError] = useState<string | null>(null);
+  const [results, setResults] = useState<WriteBackResult[] | null>(null);
+  const [noOverleafDocs, setNoOverleafDocs] = useState<string[]>([]);
+  const [binarySkipped, setBinarySkipped] = useState<string[]>([]);
+  const [commitSha, setCommitSha] = useState<string | null>(null);
+
+  const reset = () => {
+    setMode('idle');
+    setStep('');
+    setError(null);
+    setResults(null);
+    setNoOverleafDocs([]);
+    setBinarySkipped([]);
+    setCommitSha(null);
+  };
+
+  const pull = async () => {
+    setMode('pulling');
+    setError(null);
+    setResults(null);
+    setNoOverleafDocs([]);
+    setBinarySkipped([]);
+    setCommitSha(null);
+    try {
+      setStep('Fetching GitHub branch…');
+      const snapshot = await sourceFromGitHubBranch(token, repoConfig);
+      setCommitSha(snapshot.commitSha);
+      setBinarySkipped(snapshot.skipped.map((s) => s.path));
+
+      if (snapshot.files.length === 0) {
+        setError(
+          `No pullable text files on ${repoConfig.branch}${repoConfig.targetDir ? ` under ${repoConfig.targetDir}/` : ''}.`,
+        );
+        setMode('error');
+        return;
+      }
+
+      setStep('Resolving Overleaf docs…');
+      const md = await fetchProjectMetadataViaBridge(projectId);
+      if (!md.ok) {
+        throw new Error(`Overleaf metadata: ${md.message}`);
+      }
+      const overleafEntries = flattenProjectTree(md.data.rootFolder);
+      const docIdByPath = new Map<string, string>();
+      for (const entry of overleafEntries) {
+        if (entry.kind === 'doc' && entry.id) docIdByPath.set(entry.path, entry.id);
+      }
+
+      const candidates: WriteBackCandidate[] = [];
+      const missing: string[] = [];
+      const enc = new TextEncoder();
+      let i = 0;
+      for (const file of snapshot.files) {
+        i++;
+        const docId = docIdByPath.get(file.path);
+        if (!docId) {
+          missing.push(file.path);
+          continue;
+        }
+        setStep(`Reading ${i}/${snapshot.files.length}: ${file.path}`);
+        const read = await readDocViaBridge(projectId, docId);
+        if (!read.ok) {
+          // Surface as a failed result so the user can see the path that
+          // tripped, rather than aborting the whole pull.
+          candidates.push({
+            path: file.path,
+            oldText: '',
+            newText: file.text ?? '',
+            baseSha256: '',
+          });
+          continue;
+        }
+        const baseSha256 = await computeSha256(enc.encode(read.data.text));
+        candidates.push({
+          path: file.path,
+          oldText: read.data.text,
+          newText: file.text ?? '',
+          baseSha256,
+        });
+      }
+      setNoOverleafDocs(missing);
+
+      if (candidates.length === 0) {
+        setError(
+          `No GitHub files have a matching Overleaf doc. ${missing.length} file(s) would need to be created (not yet supported).`,
+        );
+        setMode('error');
+        return;
+      }
+
+      setStep(`Writing ${candidates.length} file(s) to Overleaf…`);
+      const out = await writeSelectedFilesBackToOverleaf(
+        projectId,
+        candidates,
+        {
+          requireZipBackup: experimental.requireZipBackupBeforeWriteBack,
+          requireConfirmation: false,
+          allowedExtensions: experimental.allowedWriteBackExtensions,
+          allowBinary: experimental.allowBinaryWriteBack,
+        },
+      );
+      setResults(out);
+      setMode('done');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setMode('error');
+    } finally {
+      setStep('');
+    }
+  };
+
+  const summary = results
+    ? {
+        written: results.filter((r) => r.status === 'written').length,
+        skipped: results.filter((r) => r.status === 'skipped').length,
+        conflict: results.filter((r) => r.status === 'conflict').length,
+        failed: results.filter((r) => r.status === 'failed').length,
+      }
+    : null;
+
+  return (
+    <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px dashed var(--border)' }}>
+      <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>
+        Pull from GitHub into Overleaf
+      </div>
+      <div className="muted" style={{ fontSize: 11.5 }}>
+        Reverses the snapshot direction. Reads <code>{repoConfig.branch}</code>{' '}
+        HEAD from <code>{repoConfig.owner}/{repoConfig.repo}</code>
+        {repoConfig.targetDir ? <> under <code>{repoConfig.targetDir}/</code></> : null}
+        {' '}and writes each matching text file back to Overleaf via the live
+        bridge. New files (in GitHub but not Overleaf) are skipped in this
+        build.
+      </div>
+
+      {mode === 'idle' && (
+        <button
+          className="button full"
+          type="button"
+          onClick={() => setMode('confirming')}
+          style={{ marginTop: 8 }}
+        >
+          Pull from GitHub into Overleaf
+        </button>
+      )}
+
+      {mode === 'confirming' && (
+        <div style={{ marginTop: 8 }}>
+          <div
+            className="banner warning"
+            role="alert"
+            style={{ fontSize: 11.5 }}
+          >
+            This writes GitHub's HEAD into Overleaf. Per-file conflict checks
+            still apply, and a ZIP backup is taken first if that option is on
+            — but Overleaf-side changes since GitHub HEAD will surface as
+            conflicts.
+          </div>
+          <div className="row" style={{ gap: 6, marginTop: 6 }}>
+            <button
+              className="button primary"
+              type="button"
+              onClick={pull}
+              style={{ flex: 1 }}
+            >
+              Yes, pull
+            </button>
+            <button className="button" type="button" onClick={reset}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {mode === 'pulling' && (
+        <div className="progress-text" role="status" aria-live="polite" style={{ marginTop: 8 }}>
+          <span className="spinner" aria-hidden="true" />
+          {step || 'Pulling…'}
+        </div>
+      )}
+
+      {mode === 'error' && error && (
+        <>
+          <div className="banner error" role="alert" style={{ marginTop: 8 }}>
+            {error}
+          </div>
+          <button
+            className="button full"
+            type="button"
+            onClick={reset}
+            style={{ marginTop: 6 }}
+          >
+            Dismiss
+          </button>
+        </>
+      )}
+
+      {mode === 'done' && summary && (
+        <>
+          {commitSha && (
+            <div className="muted" style={{ marginTop: 8, fontSize: 11.5 }}>
+              From <code>{commitSha.substring(0, 7)}</code>
+            </div>
+          )}
+          <div
+            className={`banner ${summary.failed + summary.conflict === 0 ? 'success' : 'warning'}`}
+            role="status"
+            style={{ marginTop: 6, fontSize: 12 }}
+          >
+            {summary.written} written · {summary.skipped} skipped · {summary.conflict} conflict · {summary.failed} failed
+            {noOverleafDocs.length > 0 && (
+              <> · {noOverleafDocs.length} not in Overleaf</>
+            )}
+            {binarySkipped.length > 0 && (
+              <> · {binarySkipped.length} binary/unknown</>
+            )}
+          </div>
+          {results && results.length > 0 && (
+            <details style={{ marginTop: 6 }}>
+              <summary style={{ cursor: 'pointer', fontSize: 11.5 }}>
+                Per-file results ({results.length})
+              </summary>
+              <ul style={{ marginTop: 4, fontSize: 11.5, paddingLeft: 16 }}>
+                {results.map((r, i) => (
+                  <li key={i}>
+                    <strong>{r.status}</strong> — <code>{r.path}</code>
+                    {r.message ? `: ${r.message}` : ''}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+          {(noOverleafDocs.length > 0 || binarySkipped.length > 0) && (
+            <details style={{ marginTop: 4 }}>
+              <summary style={{ cursor: 'pointer', fontSize: 11.5 }}>
+                Files not pulled ({noOverleafDocs.length + binarySkipped.length})
+              </summary>
+              <ul style={{ marginTop: 4, fontSize: 11.5, paddingLeft: 16 }}>
+                {noOverleafDocs.map((p) => (
+                  <li key={`no-${p}`}>
+                    <code>{p}</code> — not in Overleaf
+                  </li>
+                ))}
+                {binarySkipped.map((p) => (
+                  <li key={`bin-${p}`}>
+                    <code>{p}</code> — binary or unknown
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+          <button
+            className="button full"
+            type="button"
+            onClick={reset}
+            style={{ marginTop: 6 }}
+          >
+            Done
+          </button>
+        </>
+      )}
+    </div>
   );
 }
 
