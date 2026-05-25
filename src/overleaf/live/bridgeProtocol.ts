@@ -11,7 +11,12 @@
 // base64 string to survive structured-clone over chrome.runtime messaging.
 
 import type { ProjectFile } from '../../shared/types';
-import type { LiveSyncErrorCode } from './types';
+import type { LiveProjectFolder, LiveSyncErrorCode } from './types';
+import type { OtOp } from './overleafOt';
+
+// Re-export so the content script can use the shared OT type without
+// reaching into the popup-only overleafOt module path.
+export type { OtOp };
 
 export const BRIDGE_VERSION = 1 as const;
 
@@ -24,6 +29,25 @@ export type BridgeRequest =
       type: 'LIVE_FETCH_SNAPSHOT';
       version: typeof BRIDGE_VERSION;
       projectId: string;
+    }
+  | {
+      type: 'LIVE_FETCH_PROJECT_METADATA';
+      version: typeof BRIDGE_VERSION;
+      projectId: string;
+    }
+  | {
+      type: 'LIVE_READ_DOC';
+      version: typeof BRIDGE_VERSION;
+      projectId: string;
+      docId: string;
+    }
+  | {
+      type: 'LIVE_WRITE_DOC';
+      version: typeof BRIDGE_VERSION;
+      projectId: string;
+      docId: string;
+      ops: OtOp[];
+      baseVersion: number;
     };
 
 export type SerializedProjectFile = {
@@ -57,6 +81,30 @@ export type LiveSnapshotResponseData = {
   files: SerializedProjectFile[];
   warnings: string[];
   fetchedAt: string;
+};
+
+// Phase-1 write-back protocol responses. The popup owns the conflict
+// detector and the OT diff; the content script owns the socket. These
+// three responses are the minimum surface needed to wire the existing
+// writeSelectedFilesBackToOverleaf flow to a real channel.
+export type LiveProjectMetadataResponseData = {
+  projectId: string;
+  // Shape-compatible with WorkshopFolder[] returned by joinProject —
+  // popup's existing flattenProjectTree consumes this directly.
+  rootFolder: LiveProjectFolder[];
+  name?: string;
+};
+
+export type LiveReadDocResponseData = {
+  docId: string;
+  version: number;
+  text: string;
+};
+
+export type LiveWriteDocResponseData = {
+  docId: string;
+  newVersion: number;
+  text: string;
 };
 
 export function uint8ToBase64(bytes: Uint8Array): string {

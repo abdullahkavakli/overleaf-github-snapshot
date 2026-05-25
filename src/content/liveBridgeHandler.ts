@@ -23,7 +23,11 @@ import { SocketIo09Client, SocketIo09Error } from './socketIo09';
 import type {
   BridgeFailure,
   BridgeResponse,
+  LiveProjectMetadataResponseData,
+  LiveReadDocResponseData,
   LiveSnapshotResponseData,
+  LiveWriteDocResponseData,
+  OtOp,
   SerializedProjectFile,
 } from '../overleaf/live/bridgeProtocol';
 import { uint8ToBase64 } from '../overleaf/live/bridgeProtocol';
@@ -431,4 +435,171 @@ export async function handleLiveFetchSnapshot(
       fetchedAt: new Date().toISOString(),
     },
   };
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Phase-1 write-back bridge handlers (read + metadata real, write stubbed).
+//
+// These reuse the same connect+joinProject machinery as handleLiveFetchSnapshot
+// but expose finer-grained primitives so the popup-side write-back path can
+// drive an individual doc read/write rather than always pulling the whole
+// project. The actual OT applyUpdate wire-format work lives in a later
+// slice — handleLiveWriteDoc is intentionally a stub here.
+// ──────────────────────────────────────────────────────────────────────────
+
+type OpenedSession = {
+  client: SocketIo09Client;
+  project: WorkshopProject;
+  dbg: (msg: string) => void;
+};
+
+// All the connect+joinProject boilerplate, returned as a typed
+// BridgeResponse so callers can early-return on failure with the same
+// shape the popup already handles. On success the caller is responsible
+// for calling `client.disconnect()` (use a try/finally).
+async function openProjectSession(
+  projectId: string,
+): Promise<BridgeResponse<OpenedSession>> {
+  if (!/^[a-zA-Z0-9]+$/.test(projectId)) {
+    return failure('unknown', `Invalid Overleaf project ID: ${projectId}`);
+  }
+
+  const onPath = window.location.pathname;
+  if (!onPath.startsWith(`/project/${projectId}`)) {
+    return failure(
+      'project_join_failed',
+      `Content script is on a different page (${onPath}). Reopen the popup from the matching Overleaf project tab.`,
+      'Switch to the Overleaf project tab that matches the popup before retrying.',
+    );
+  }
+
+  const csrfToken = extractCsrfFromDocument();
+  if (!csrfToken) {
+    return failure(
+      'protocol_unavailable',
+      'CSRF token not found in this project page (no <meta name="ol-csrfToken">). Page layout may have changed.',
+      'Refresh the Overleaf tab and try again.',
+    );
+  }
+
+  let diagnosticsEnabled = false;
+  try {
+    diagnosticsEnabled = window.localStorage?.getItem('ofs-live-debug') === '1';
+  } catch {
+    // localStorage can throw in sandboxed/blocked contexts — treat as off.
+  }
+  const dbg = (msg: string): void => {
+    if (diagnosticsEnabled) console.debug(`[ofs-live] ${msg}`);
+  };
+
+  const client = new SocketIo09Client({
+    baseUrl: 'https://www.overleaf.com',
+    handshakeQuery: { projectId, t: String(Date.now()) },
+    websocketQuery: { projectId },
+    debug: diagnosticsEnabled,
+  });
+
+  dbg('phase: connecting');
+  try {
+    await client.connect();
+  } catch (e) {
+    const msg =
+      e instanceof SocketIo09Error ? e.message : e instanceof Error ? e.message : String(e);
+    return failure(
+      'socket_connection_failed',
+      `Could not open the Overleaf real-time channel: ${msg}`,
+      'Refresh the Overleaf tab and retry, or fall back to the ZIP route.',
+    );
+  }
+
+  dbg('phase: joinProject');
+  let projectResult: JoinProjectResult;
+  try {
+    projectResult = await awaitJoinProject(client, projectId);
+  } catch (e) {
+    client.disconnect();
+    return failure(
+      'project_join_failed',
+      e instanceof Error ? e.message : String(e),
+      'Refresh the Overleaf tab and retry, or fall back to the ZIP route.',
+    );
+  }
+
+  return {
+    ok: true,
+    data: { client, project: projectResult.project, dbg },
+  };
+}
+
+export async function handleLiveFetchProjectMetadata(
+  projectId: string,
+): Promise<BridgeResponse<LiveProjectMetadataResponseData>> {
+  const session = await openProjectSession(projectId);
+  if (!session.ok) return session;
+  const { client, project, dbg } = session.data;
+  try {
+    dbg('phase: metadata-only return');
+    return {
+      ok: true,
+      data: {
+        projectId,
+        rootFolder: project.rootFolder ?? [],
+        name: project.name,
+      },
+    };
+  } finally {
+    client.disconnect();
+  }
+}
+
+export async function handleLiveReadDoc(
+  projectId: string,
+  docId: string,
+): Promise<BridgeResponse<LiveReadDocResponseData>> {
+  if (!/^[a-zA-Z0-9]+$/.test(docId)) {
+    return failure('unknown', `Invalid Overleaf doc ID: ${docId}`);
+  }
+  const session = await openProjectSession(projectId);
+  if (!session.ok) return session;
+  const { client, dbg } = session.data;
+  try {
+    dbg(`phase: joinDoc ${docId}`);
+    const result = await joinDoc(client, docId);
+    // Best-effort: tell the server we're done so it doesn't keep pushing
+    // OT updates we won't consume. Mirrors handleLiveFetchSnapshot.
+    try {
+      client.emit('leaveDoc', docId);
+    } catch {
+      // ignore
+    }
+    return {
+      ok: true,
+      data: { docId, version: result.version, text: result.text },
+    };
+  } catch (e) {
+    return failure(
+      'document_join_failed',
+      e instanceof Error ? e.message : String(e),
+      'Refresh the Overleaf tab and retry, or fall back to the ZIP route.',
+    );
+  } finally {
+    client.disconnect();
+  }
+}
+
+// STUB. Real implementation is the risk-dominated piece of phase 1:
+// send Overleaf's applyOtUpdate over the socket, await the ack, and
+// return the new version. Tracked separately so the protocol shape can
+// be exercised end-to-end first.
+export async function handleLiveWriteDoc(
+  _projectId: string,
+  _docId: string,
+  _ops: OtOp[],
+  _baseVersion: number,
+): Promise<BridgeResponse<LiveWriteDocResponseData>> {
+  return failure(
+    'write_back_not_safe',
+    'Live write-back is not yet wired in this build — bridge protocol exists, OT applyUpdate path is the next slice.',
+    'Use the ZIP-based commit-to-GitHub flow for now; write-back to Overleaf is on the roadmap.',
+  );
 }

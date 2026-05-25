@@ -349,7 +349,14 @@ observer.observe(document.documentElement, { childList: true, subtree: true });
 // the joinProject/joinDoc dance, and returns a snapshot to the popup.
 // ──────────────────────────────────────────────────────────────────────────
 
-type AnyBridgeMessage = { type?: string; version?: number; projectId?: string };
+type AnyBridgeMessage = {
+  type?: string;
+  version?: number;
+  projectId?: string;
+  docId?: string;
+  ops?: unknown;
+  baseVersion?: unknown;
+};
 
 chrome.runtime.onMessage.addListener(
   (message: AnyBridgeMessage, _sender, sendResponse) => {
@@ -380,6 +387,90 @@ chrome.runtime.onMessage.addListener(
         }
       })();
       return true; // async response
+    }
+    if (message.type === 'LIVE_FETCH_PROJECT_METADATA') {
+      const projectId = typeof message.projectId === 'string' ? message.projectId : '';
+      if (!projectId) {
+        sendResponse({ ok: false, code: 'unknown', message: 'projectId missing in request' });
+        return false;
+      }
+      void (async () => {
+        try {
+          const mod = await import('./liveBridgeHandler');
+          const result = await mod.handleLiveFetchProjectMetadata(projectId);
+          sendResponse(result);
+        } catch (e) {
+          sendResponse({
+            ok: false,
+            code: 'unknown',
+            message: e instanceof Error ? e.message : String(e),
+          });
+        }
+      })();
+      return true;
+    }
+    if (message.type === 'LIVE_READ_DOC') {
+      const projectId = typeof message.projectId === 'string' ? message.projectId : '';
+      const docId = typeof message.docId === 'string' ? message.docId : '';
+      if (!projectId || !docId) {
+        sendResponse({
+          ok: false,
+          code: 'unknown',
+          message: 'projectId and docId are required',
+        });
+        return false;
+      }
+      void (async () => {
+        try {
+          const mod = await import('./liveBridgeHandler');
+          const result = await mod.handleLiveReadDoc(projectId, docId);
+          sendResponse(result);
+        } catch (e) {
+          sendResponse({
+            ok: false,
+            code: 'unknown',
+            message: e instanceof Error ? e.message : String(e),
+          });
+        }
+      })();
+      return true;
+    }
+    if (message.type === 'LIVE_WRITE_DOC') {
+      const projectId = typeof message.projectId === 'string' ? message.projectId : '';
+      const docId = typeof message.docId === 'string' ? message.docId : '';
+      const baseVersion =
+        typeof message.baseVersion === 'number' ? message.baseVersion : NaN;
+      const ops = Array.isArray(message.ops) ? message.ops : null;
+      if (!projectId || !docId || ops === null || !Number.isFinite(baseVersion)) {
+        sendResponse({
+          ok: false,
+          code: 'unknown',
+          message: 'projectId, docId, ops[], and baseVersion are required',
+        });
+        return false;
+      }
+      void (async () => {
+        try {
+          const mod = await import('./liveBridgeHandler');
+          // ops is shaped by the popup-side OtOp builder; the handler is
+          // currently a stub but the dispatcher still hands it through
+          // verbatim so the wire format is exercised end-to-end.
+          const result = await mod.handleLiveWriteDoc(
+            projectId,
+            docId,
+            ops as Parameters<typeof mod.handleLiveWriteDoc>[2],
+            baseVersion,
+          );
+          sendResponse(result);
+        } catch (e) {
+          sendResponse({
+            ok: false,
+            code: 'unknown',
+            message: e instanceof Error ? e.message : String(e),
+          });
+        }
+      })();
+      return true;
     }
     return false;
   },

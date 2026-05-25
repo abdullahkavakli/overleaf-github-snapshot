@@ -71,7 +71,7 @@ async function pingBridgeWithRetry(
   return last;
 }
 
-async function findOverleafTab(projectId: string): Promise<chrome.tabs.Tab | null> {
+export async function findOverleafTab(projectId: string): Promise<chrome.tabs.Tab | null> {
   const tabs = await chrome.tabs.query({
     url: [`https://www.overleaf.com/project/${projectId}*`],
   });
@@ -81,7 +81,7 @@ async function findOverleafTab(projectId: string): Promise<chrome.tabs.Tab | nul
   return (active ?? tabs[0]) ?? null;
 }
 
-function sendBridgeRequest<T>(
+export function sendBridgeRequest<T>(
   tabId: number,
   request: BridgeRequest,
   timeoutMs: number,
