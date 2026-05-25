@@ -326,6 +326,16 @@ function syncWithUrl(): void {
   }
 }
 
+// Guard against double-initialization. MV3 isolated worlds persist
+// across chrome.scripting.executeScript calls, so re-running the loader
+// would otherwise register the bridge listener twice — every incoming
+// message would then be handled twice, causing duplicate LIVE_WRITE_DOC
+// applyOtUpdate sends and (worse) duplicate LIVE_CREATE_DOC_AT_PATH
+// folder/doc creations in Overleaf. First injection wins.
+const __w = window as Window & { __overleafGithubSnapshotBridgeLoaded?: boolean };
+if (!__w.__overleafGithubSnapshotBridgeLoaded) {
+  __w.__overleafGithubSnapshotBridgeLoaded = true;
+
 // Initial pass + observe for SPA route changes inside Overleaf.
 syncWithUrl();
 
@@ -505,3 +515,5 @@ chrome.runtime.onMessage.addListener(
     return false;
   },
 );
+
+} // end of double-init guard

@@ -28,10 +28,15 @@ const LIVE_FETCH_TIMEOUT_MS = 60_000;
 
 // MV3 only auto-injects content scripts at navigation time, so any Overleaf
 // tab opened before the extension was installed or updated will not have
-// the bridge loaded. The user shouldn't have to know that — when the first
-// ping comes back with `protocol_unavailable`, we re-inject the same files
-// the manifest declares for overleaf.com (paths are read from the live
-// manifest so we don't drift from @crxjs/vite-plugin's hashed filenames).
+// the bridge loaded. The user shouldn't have to know that — every bridge
+// call goes through sendBridgeRequest which auto-injects on
+// protocol_unavailable, then poll-retries the same request to cover the
+// @crxjs loader's async import gap.
+//
+// The content script's own double-init guard (see overleafContentScript.ts)
+// keeps re-injection idempotent: subsequent injections in the same isolated
+// world become no-ops, so concurrent bridge calls don't pile up duplicate
+// listeners that would double-handle messages.
 async function injectOverleafContentScripts(tabId: number): Promise<void> {
   const manifest = chrome.runtime.getManifest();
   const entries = manifest.content_scripts ?? [];
@@ -46,31 +51,6 @@ async function injectOverleafContentScripts(tabId: number): Promise<void> {
   await chrome.scripting.executeScript({ target: { tabId }, files });
 }
 
-function pingBridge(tabId: number, timeoutMs: number) {
-  return sendBridgeRequest<{ onProjectPage: boolean }>(
-    tabId,
-    { type: 'LIVE_PING', version: BRIDGE_VERSION },
-    timeoutMs,
-  );
-}
-
-// The @crxjs loader does a dynamic import of the real chunk, so the
-// message listener isn't synchronously ready when executeScript() resolves.
-// Poll briefly to cover that async gap. Failures other than
-// "listener-not-yet-registered" still return early.
-async function pingBridgeWithRetry(
-  tabId: number,
-  attempts: number,
-  intervalMs: number,
-) {
-  let last = await pingBridge(tabId, 2_000);
-  for (let i = 1; i < attempts && !last.ok && last.code === 'protocol_unavailable'; i++) {
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    last = await pingBridge(tabId, 2_000);
-  }
-  return last;
-}
-
 export async function findOverleafTab(projectId: string): Promise<chrome.tabs.Tab | null> {
   const tabs = await chrome.tabs.query({
     url: [`https://www.overleaf.com/project/${projectId}*`],
@@ -81,7 +61,10 @@ export async function findOverleafTab(projectId: string): Promise<chrome.tabs.Ta
   return (active ?? tabs[0]) ?? null;
 }
 
-export function sendBridgeRequest<T>(
+// One-shot raw send. No auto-inject. Used by sendBridgeRequest's retry
+// loop and not exposed because almost no caller wants the no-auto-inject
+// semantics.
+function sendBridgeRequestRaw<T>(
   tabId: number,
   request: BridgeRequest,
   timeoutMs: number,
@@ -132,6 +115,49 @@ export function sendBridgeRequest<T>(
   });
 }
 
+// Public send. Auto-injects the content script on protocol_unavailable
+// and poll-retries the SAME request. Safe to retry because
+// chrome.runtime.lastError = "Receiving end does not exist" fires BEFORE
+// the message is delivered, so the original request never reached
+// page-side code — even non-idempotent writes haven't run.
+export async function sendBridgeRequest<T>(
+  tabId: number,
+  request: BridgeRequest,
+  timeoutMs: number,
+): Promise<BridgeResponse<T>> {
+  const first = await sendBridgeRequestRaw<T>(tabId, request, timeoutMs);
+  if (first.ok) return first;
+  if (first.code !== 'protocol_unavailable') return first;
+
+  try {
+    await injectOverleafContentScripts(tabId);
+  } catch (e) {
+    return {
+      ok: false,
+      code: 'protocol_unavailable',
+      message: `Live bridge not reachable and on-demand injection failed: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+      recovery: 'Refresh the Overleaf project tab so the content script reloads.',
+    };
+  }
+
+  // Poll the bridge briefly — the @crxjs loader's dynamic import means the
+  // listener isn't synchronously ready when executeScript() resolves.
+  for (let i = 0; i < 5; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const retry = await sendBridgeRequestRaw<T>(tabId, request, timeoutMs);
+    if (retry.ok) return retry;
+    if (retry.code !== 'protocol_unavailable') return retry;
+  }
+  return {
+    ok: false,
+    code: 'protocol_unavailable',
+    message: 'Live bridge not reachable on the Overleaf tab even after on-demand injection.',
+    recovery: 'Refresh the Overleaf project tab manually.',
+  };
+}
+
 export async function fetchOverleafLiveSnapshot(
   projectId: string,
   experimental: ExperimentalConfig,
@@ -152,24 +178,16 @@ export async function fetchOverleafLiveSnapshot(
     );
   }
 
-  // Ping first to confirm the bridge is loaded. If it isn't — typically
-  // because the tab was opened before the extension was installed or
-  // updated — programmatically inject the same files the manifest declares
-  // and retry. Falls through to the existing recovery hint if injection
-  // doesn't bring the bridge up.
-  let ping = await pingBridge(tab.id, 5_000);
-  if (!ping.ok && ping.code === 'protocol_unavailable') {
-    try {
-      await injectOverleafContentScripts(tab.id);
-    } catch (e) {
-      throw new LiveSyncError(
-        'protocol_unavailable',
-        `Live bridge not reachable and on-demand injection failed: ${e instanceof Error ? e.message : String(e)}`,
-        'Refresh the Overleaf project tab so the content script reloads.',
-      );
-    }
-    ping = await pingBridgeWithRetry(tab.id, 5, 200);
-  }
+  // Ping to confirm the bridge is reachable. sendBridgeRequest itself
+  // auto-injects + poll-retries on protocol_unavailable, so we don't
+  // need a separate inject path here — the explicit ping just lets us
+  // surface the project_join_failed case (tab is on a non-project URL)
+  // before we kick off the heavier LIVE_FETCH_SNAPSHOT.
+  const ping = await sendBridgeRequest<{ onProjectPage: boolean }>(
+    tab.id,
+    { type: 'LIVE_PING', version: BRIDGE_VERSION },
+    5_000,
+  );
   if (!ping.ok) {
     throw new LiveSyncError(
       'protocol_unavailable',
