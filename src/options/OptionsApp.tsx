@@ -36,8 +36,9 @@ import {
 } from '../overleaf/live/bridgeClient';
 import { flattenProjectTree } from '../overleaf/live/overleafProjectLoader';
 import { writeSelectedFilesBackToOverleaf } from '../overleaf/live/overleafWriteBack';
-import type { WriteBackResult } from '../overleaf/live/types';
+import type { WriteBackCandidate, WriteBackResult } from '../overleaf/live/types';
 import { computeSha256 } from '../diff/fileHasher';
+import { sourceFromGitHubBranch } from '../sources/sourceFromGitHubBranch';
 
 type SaveState =
   | { kind: 'idle' }
@@ -499,7 +500,13 @@ export function Options(): React.ReactElement {
             </div>
 
             {experimental.overleafWriteBackEnabled && (
-              <WriteBackDevPanel experimental={experimental} />
+              <>
+                <WriteBackDevPanel experimental={experimental} />
+                <PullFromGitHubDevPanel
+                  links={links}
+                  experimental={experimental}
+                />
+              </>
             )}
           </div>
         )}
@@ -1074,6 +1081,315 @@ function WriteBackDevPanel({
             </div>
           ))}
         </div>
+      )}
+    </div>
+  );
+}
+
+// "Pull from GitHub" — reverse-direction sibling of WriteBackDevPanel.
+//
+// Reads the branch HEAD of the chosen project's linked repo, then
+// loops every text file through the existing write-back orchestration:
+//
+//   GitHub tree (text blobs only, filtered to allowedExtensions later
+//                in writeSelectedFilesBackToOverleaf)
+//     -> resolve doc IDs via the live bridge
+//     -> per-file: read current Overleaf as baseText (the popup's
+//        re-read defends against TOCTOU between read and write)
+//     -> writeSelectedFilesBackToOverleaf (ZIP backup if enabled,
+//        conflict detector, OT diff, applyOtUpdate, verify-after-write)
+//
+// First-cut scope:
+//   - Text files only.
+//   - Files in GitHub with no matching Overleaf doc are reported as
+//     skipped (new-file creation lives in a later phase).
+//   - Files in Overleaf with no GitHub source are untouched.
+//   - No preview; the existing per-file safety gates carry the load.
+function PullFromGitHubDevPanel({
+  links,
+  experimental,
+}: {
+  links: ProjectLinkMap;
+  experimental: ExperimentalConfig;
+}): React.ReactElement {
+  const entries = Object.entries(links);
+  const [selectedProjectId, setSelectedProjectId] = useState<string>(
+    entries[0]?.[0] ?? '',
+  );
+  const [busy, setBusy] = useState<'idle' | 'pulling'>('idle');
+  const [phase, setPhase] = useState<string>('');
+  const [error, setError] = useState<string | null>(null);
+  const [results, setResults] = useState<WriteBackResult[] | null>(null);
+  const [noOverleafDocs, setNoOverleafDocs] = useState<string[]>([]);
+  const [binarySkipped, setBinarySkipped] = useState<string[]>([]);
+  const [commitSha, setCommitSha] = useState<string | null>(null);
+
+  const onPull = async () => {
+    setError(null);
+    setResults(null);
+    setNoOverleafDocs([]);
+    setBinarySkipped([]);
+    setCommitSha(null);
+    setBusy('pulling');
+
+    const link = links[selectedProjectId];
+    if (!link) {
+      setError(`No mapping found for ${selectedProjectId}.`);
+      setBusy('idle');
+      return;
+    }
+
+    try {
+      // 1. Fetch the GitHub branch.
+      setPhase('Fetching GitHub branch…');
+      const snapshot = await sourceFromGitHubBranch(link.token, link.repo);
+      setCommitSha(snapshot.commitSha);
+      setBinarySkipped(snapshot.skipped.map((s) => s.path));
+
+      if (snapshot.files.length === 0) {
+        setError(
+          `GitHub branch ${link.repo.branch} contains no pullable text files${link.repo.targetDir ? ` under ${link.repo.targetDir}/` : ''}.`,
+        );
+        return;
+      }
+
+      // 2. Resolve Overleaf doc IDs by path.
+      setPhase('Resolving Overleaf docs…');
+      const md = await fetchProjectMetadataViaBridge(selectedProjectId);
+      if (!md.ok) {
+        throw new Error(`Overleaf metadata: ${md.message}`);
+      }
+      const overleafEntries = flattenProjectTree(md.data.rootFolder);
+      const docIdByPath = new Map<string, string>();
+      for (const entry of overleafEntries) {
+        if (entry.kind === 'doc' && entry.id) docIdByPath.set(entry.path, entry.id);
+      }
+
+      // 3. Build candidates: read current Overleaf per matching path,
+      //    use that as baseText so the in-pipeline TOCTOU conflict check
+      //    has something meaningful to compare.
+      const candidates: WriteBackCandidate[] = [];
+      const missing: string[] = [];
+      const enc = new TextEncoder();
+      let i = 0;
+      for (const file of snapshot.files) {
+        i++;
+        const docId = docIdByPath.get(file.path);
+        if (!docId) {
+          missing.push(file.path);
+          continue;
+        }
+        setPhase(
+          `Reading ${i}/${snapshot.files.length} from Overleaf: ${file.path}…`,
+        );
+        const read = await readDocViaBridge(selectedProjectId, docId);
+        if (!read.ok) {
+          // Surface as a failed result so the user can see the path that
+          // tripped, rather than aborting the whole pull.
+          candidates.push({
+            path: file.path,
+            oldText: '',
+            newText: file.text ?? '',
+            baseSha256: '',
+          });
+          continue;
+        }
+        const baseText = read.data.text;
+        const baseSha256 = await computeSha256(enc.encode(baseText));
+        candidates.push({
+          path: file.path,
+          oldText: baseText,
+          newText: file.text ?? '',
+          baseSha256,
+        });
+      }
+      setNoOverleafDocs(missing);
+
+      if (candidates.length === 0) {
+        setError(
+          `None of the GitHub files have a matching doc in Overleaf. Skipped: ${missing.length}.`,
+        );
+        return;
+      }
+
+      // 4. Run write-back orchestration with the existing safety gates.
+      setPhase(`Writing ${candidates.length} file(s) back to Overleaf…`);
+      const out = await writeSelectedFilesBackToOverleaf(
+        selectedProjectId,
+        candidates,
+        {
+          requireZipBackup: experimental.requireZipBackupBeforeWriteBack,
+          requireConfirmation: false,
+          allowedExtensions: experimental.allowedWriteBackExtensions,
+          allowBinary: experimental.allowBinaryWriteBack,
+        },
+      );
+      setResults(out);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy('idle');
+      setPhase('');
+    }
+  };
+
+  if (entries.length === 0) {
+    return (
+      <div
+        style={{
+          marginTop: 22,
+          padding: '14px 14px 16px',
+          border: '1px dashed var(--border)',
+          borderRadius: 8,
+        }}
+      >
+        <h3 style={{ margin: '0 0 4px', fontSize: 14 }}>
+          Pull from GitHub into Overleaf
+        </h3>
+        <div className="hint">
+          Add a project → repo mapping above before you can pull from GitHub
+          into Overleaf.
+        </div>
+      </div>
+    );
+  }
+
+  const summary = results
+    ? {
+        written: results.filter((r) => r.status === 'written').length,
+        skipped: results.filter((r) => r.status === 'skipped').length,
+        conflict: results.filter((r) => r.status === 'conflict').length,
+        failed: results.filter((r) => r.status === 'failed').length,
+      }
+    : null;
+
+  return (
+    <div
+      style={{
+        marginTop: 22,
+        padding: '14px 14px 16px',
+        border: '1px dashed var(--border)',
+        borderRadius: 8,
+      }}
+    >
+      <h3 style={{ margin: '0 0 4px', fontSize: 14 }}>
+        Pull from GitHub into Overleaf
+      </h3>
+      <div className="hint" style={{ marginBottom: 12 }}>
+        Reverses the snapshot direction: reads the branch HEAD of the
+        linked GitHub repo and writes every matching text file back to
+        Overleaf via the live bridge. Text files only in this build;
+        files present in GitHub but not in Overleaf are reported as
+        skipped (new-file creation comes later). Each write goes through
+        the same safety pipeline as the write-back test panel above.
+      </div>
+
+      <div className="field">
+        <label htmlFor="pgh-pid">Linked project</label>
+        <select
+          id="pgh-pid"
+          value={selectedProjectId}
+          onChange={(e) => setSelectedProjectId(e.target.value)}
+        >
+          {entries.map(([pid, link]) => (
+            <option key={pid} value={pid}>
+              {pid} → {link.repo.owner}/{link.repo.repo}@{link.repo.branch}
+              {link.repo.targetDir ? ` (${link.repo.targetDir}/)` : ''}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="actions" style={{ marginTop: 8 }}>
+        <button
+          type="button"
+          className="button primary"
+          onClick={onPull}
+          disabled={busy !== 'idle' || !selectedProjectId}
+          aria-busy={busy === 'pulling'}
+        >
+          {busy === 'pulling' ? (
+            <>
+              <span className="spinner" aria-hidden="true" />
+              {phase || 'Pulling…'}
+            </>
+          ) : (
+            'Pull from GitHub into Overleaf'
+          )}
+        </button>
+      </div>
+
+      {error && (
+        <div className="banner error" role="alert" style={{ marginTop: 10 }}>
+          {error}
+        </div>
+      )}
+
+      {commitSha && (
+        <div className="hint" style={{ marginTop: 10 }}>
+          GitHub HEAD: <code>{commitSha.substring(0, 7)}</code>
+        </div>
+      )}
+
+      {summary && (
+        <div
+          className={`banner ${summary.failed + summary.conflict === 0 ? 'success' : 'info'}`}
+          role="status"
+          style={{ marginTop: 10 }}
+        >
+          <strong>Summary:</strong> {summary.written} written, {summary.skipped} skipped, {summary.conflict} conflict, {summary.failed} failed
+          {noOverleafDocs.length > 0 && (
+            <>, {noOverleafDocs.length} file(s) not present in Overleaf</>
+          )}
+          {binarySkipped.length > 0 && (
+            <>, {binarySkipped.length} binary/unknown file(s) in GitHub not pulled</>
+          )}
+        </div>
+      )}
+
+      {results && results.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          {results.map((r, i) => (
+            <div
+              key={i}
+              className={`banner ${
+                r.status === 'written'
+                  ? 'success'
+                  : r.status === 'conflict' || r.status === 'failed'
+                    ? 'error'
+                    : 'info'
+              }`}
+              role={r.status === 'written' ? 'status' : 'alert'}
+              style={{ marginTop: 6, fontSize: 12 }}
+            >
+              <strong>{r.status}</strong> — <code>{r.path}</code>
+              {r.message ? `: ${r.message}` : ''}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {(noOverleafDocs.length > 0 || binarySkipped.length > 0) && (
+        <details style={{ marginTop: 10 }}>
+          <summary style={{ cursor: 'pointer', fontSize: 12 }}>
+            Show files not pulled (
+            {noOverleafDocs.length + binarySkipped.length})
+          </summary>
+          <ul style={{ marginTop: 6, fontSize: 12 }}>
+            {noOverleafDocs.map((p) => (
+              <li key={`no-${p}`}>
+                <code>{p}</code> — not present in Overleaf (would need
+                file-creation, not yet supported)
+              </li>
+            ))}
+            {binarySkipped.map((p) => (
+              <li key={`bin-${p}`}>
+                <code>{p}</code> — binary or unknown extension (text-only
+                in this build)
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
     </div>
   );

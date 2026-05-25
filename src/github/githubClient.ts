@@ -112,6 +112,21 @@ export class GitHubClient {
     );
   }
 
+  // Read a single blob by its SHA. GitHub's blob endpoint returns the
+  // content base64-encoded (along with an `encoding` field — always
+  // "base64" for the git-blob endpoint, "utf-8" never happens here).
+  // We decode in the caller because the caller already knows whether
+  // to treat the bytes as text or binary based on file extension.
+  getBlob(
+    owner: string,
+    repo: string,
+    sha: string,
+  ): Promise<{ sha: string; content: string; encoding: string; size: number }> {
+    return this.request(
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/blobs/${sha}`,
+    );
+  }
+
   createBlob(
     owner: string,
     repo: string,
