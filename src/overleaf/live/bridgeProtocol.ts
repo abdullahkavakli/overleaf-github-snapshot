@@ -48,6 +48,18 @@ export type BridgeRequest =
       docId: string;
       ops: OtOp[];
       baseVersion: number;
+    }
+  | {
+      type: 'LIVE_CREATE_DOC_AT_PATH';
+      version: typeof BRIDGE_VERSION;
+      projectId: string;
+      // Project-relative path, e.g. "appendix.md" or "chapters/intro.tex".
+      // Folders along the path are created on demand. Refused if the doc
+      // already exists at this path (use LIVE_WRITE_DOC instead).
+      path: string;
+      // Initial content for the new doc. Empty string is allowed and
+      // skips the OT-seed step entirely.
+      initialContent: string;
     };
 
 export type SerializedProjectFile = {
@@ -104,6 +116,13 @@ export type LiveReadDocResponseData = {
 export type LiveWriteDocResponseData = {
   docId: string;
   newVersion: number;
+  text: string;
+};
+
+export type LiveCreateDocResponseData = {
+  docId: string;
+  path: string;
+  version: number;
   text: string;
 };
 

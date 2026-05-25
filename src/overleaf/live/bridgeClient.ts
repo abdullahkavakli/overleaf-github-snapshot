@@ -11,6 +11,7 @@
 import {
   BRIDGE_VERSION,
   type BridgeResponse,
+  type LiveCreateDocResponseData,
   type LiveProjectMetadataResponseData,
   type LiveReadDocResponseData,
   type LiveWriteDocResponseData,
@@ -22,6 +23,9 @@ import { LiveSyncError } from './types';
 const METADATA_TIMEOUT_MS = 30_000;
 const READ_DOC_TIMEOUT_MS = 20_000;
 const WRITE_DOC_TIMEOUT_MS = 30_000;
+// Create-doc may need to mkdir several folders + create the doc + seed
+// content via OT, all in one bridge call. Budget extra time accordingly.
+const CREATE_DOC_TIMEOUT_MS = 45_000;
 
 // Resolve the tab id for a project, throwing a typed error if no tab
 // matches. Centralised so write-back callers don't have to duplicate the
@@ -88,5 +92,24 @@ export async function writeDocViaBridge(
       baseVersion,
     },
     WRITE_DOC_TIMEOUT_MS,
+  );
+}
+
+export async function createDocAtPathViaBridge(
+  projectId: string,
+  path: string,
+  initialContent: string,
+): Promise<BridgeResponse<LiveCreateDocResponseData>> {
+  const tabId = await resolveTabId(projectId);
+  return sendBridgeRequest<LiveCreateDocResponseData>(
+    tabId,
+    {
+      type: 'LIVE_CREATE_DOC_AT_PATH',
+      version: BRIDGE_VERSION,
+      projectId,
+      path,
+      initialContent,
+    },
+    CREATE_DOC_TIMEOUT_MS,
   );
 }

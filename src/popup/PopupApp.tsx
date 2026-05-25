@@ -48,6 +48,10 @@ import {
   sourceFromOverleafZipRoute,
 } from '../sources/sourceManager';
 import { sourceFromGitHubBranch } from '../sources/sourceFromGitHubBranch';
+import {
+  createMissingDocsForPull,
+  type CreateResult,
+} from '../sources/pullFromGitHubHelpers';
 import type { SourceMode, SourceSnapshot } from '../sources/sourceTypes';
 import { fetchOverleafLiveSnapshot } from '../overleaf/live/liveSyncManager';
 import {
@@ -953,15 +957,18 @@ function PullFromGitHubSection({
   const [step, setStep] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<WriteBackResult[] | null>(null);
+  const [createResults, setCreateResults] = useState<CreateResult[] | null>(null);
   const [noOverleafDocs, setNoOverleafDocs] = useState<string[]>([]);
   const [binarySkipped, setBinarySkipped] = useState<string[]>([]);
   const [commitSha, setCommitSha] = useState<string | null>(null);
+  const [createMissing, setCreateMissing] = useState<boolean>(false);
 
   const reset = () => {
     setMode('idle');
     setStep('');
     setError(null);
     setResults(null);
+    setCreateResults(null);
     setNoOverleafDocs([]);
     setBinarySkipped([]);
     setCommitSha(null);
@@ -971,6 +978,7 @@ function PullFromGitHubSection({
     setMode('pulling');
     setError(null);
     setResults(null);
+    setCreateResults(null);
     setNoOverleafDocs([]);
     setBinarySkipped([]);
     setCommitSha(null);
@@ -1000,21 +1008,19 @@ function PullFromGitHubSection({
       }
 
       const candidates: WriteBackCandidate[] = [];
-      const missing: string[] = [];
+      const toCreate: { path: string; content: string }[] = [];
       const enc = new TextEncoder();
       let i = 0;
       for (const file of snapshot.files) {
         i++;
         const docId = docIdByPath.get(file.path);
         if (!docId) {
-          missing.push(file.path);
+          toCreate.push({ path: file.path, content: file.text ?? '' });
           continue;
         }
         setStep(`Reading ${i}/${snapshot.files.length}: ${file.path}`);
         const read = await readDocViaBridge(projectId, docId);
         if (!read.ok) {
-          // Surface as a failed result so the user can see the path that
-          // tripped, rather than aborting the whole pull.
           candidates.push({
             path: file.path,
             oldText: '',
@@ -1031,28 +1037,45 @@ function PullFromGitHubSection({
           baseSha256,
         });
       }
-      setNoOverleafDocs(missing);
+      setNoOverleafDocs(toCreate.map((c) => c.path));
 
-      if (candidates.length === 0) {
+      if (candidates.length === 0 && !(createMissing && toCreate.length > 0)) {
         setError(
-          `No GitHub files have a matching Overleaf doc. ${missing.length} file(s) would need to be created (not yet supported).`,
+          `No GitHub files have a matching Overleaf doc. ${toCreate.length} file(s) would need to be created — turn on "Also create new files" and re-run if you want them added.`,
         );
         setMode('error');
         return;
       }
 
-      setStep(`Writing ${candidates.length} file(s) to Overleaf…`);
-      const out = await writeSelectedFilesBackToOverleaf(
-        projectId,
-        candidates,
-        {
-          requireZipBackup: experimental.requireZipBackupBeforeWriteBack,
-          requireConfirmation: false,
-          allowedExtensions: experimental.allowedWriteBackExtensions,
-          allowBinary: experimental.allowBinaryWriteBack,
-        },
-      );
-      setResults(out);
+      // Write existing matches first; per-file failures still produce
+      // result rows rather than aborting.
+      if (candidates.length > 0) {
+        setStep(`Writing ${candidates.length} file(s) to Overleaf…`);
+        const out = await writeSelectedFilesBackToOverleaf(
+          projectId,
+          candidates,
+          {
+            requireZipBackup: experimental.requireZipBackupBeforeWriteBack,
+            requireConfirmation: false,
+            allowedExtensions: experimental.allowedWriteBackExtensions,
+            allowBinary: experimental.allowBinaryWriteBack,
+          },
+        );
+        setResults(out);
+      }
+
+      // Then create missing if opted in. Independent of write-back —
+      // a writeBack failure on file X doesn't block creating file Y.
+      if (createMissing && toCreate.length > 0) {
+        const created = await createMissingDocsForPull(
+          projectId,
+          toCreate,
+          experimental.allowedWriteBackExtensions,
+          setStep,
+        );
+        setCreateResults(created);
+      }
+
       setMode('done');
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -1062,14 +1085,18 @@ function PullFromGitHubSection({
     }
   };
 
-  const summary = results
-    ? {
-        written: results.filter((r) => r.status === 'written').length,
-        skipped: results.filter((r) => r.status === 'skipped').length,
-        conflict: results.filter((r) => r.status === 'conflict').length,
-        failed: results.filter((r) => r.status === 'failed').length,
-      }
-    : null;
+  const summary =
+    results || createResults
+      ? {
+          written: results?.filter((r) => r.status === 'written').length ?? 0,
+          skipped: results?.filter((r) => r.status === 'skipped').length ?? 0,
+          conflict: results?.filter((r) => r.status === 'conflict').length ?? 0,
+          failed: results?.filter((r) => r.status === 'failed').length ?? 0,
+          created: createResults?.filter((r) => r.status === 'created').length ?? 0,
+          createFailed: createResults?.filter((r) => r.status === 'failed').length ?? 0,
+          createSkipped: createResults?.filter((r) => r.status === 'skipped').length ?? 0,
+        }
+      : null;
 
   return (
     <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px dashed var(--border)' }}>
@@ -1086,14 +1113,35 @@ function PullFromGitHubSection({
       </div>
 
       {mode === 'idle' && (
-        <button
-          className="button full"
-          type="button"
-          onClick={() => setMode('confirming')}
-          style={{ marginTop: 8 }}
-        >
-          Pull from GitHub into Overleaf
-        </button>
+        <>
+          <label
+            className="checkbox-row"
+            style={{ marginTop: 8, fontSize: 11.5 }}
+          >
+            <input
+              type="checkbox"
+              checked={createMissing}
+              onChange={(e) => setCreateMissing(e.target.checked)}
+            />
+            <span>
+              Also create new files in Overleaf
+              <div className="muted" style={{ fontSize: 11 }}>
+                For files in GitHub but not Overleaf, create the doc (and any
+                missing parent folders) and seed it with GitHub content.
+                Filtered by your allowed write-back extensions. Off by
+                default — flip on intentionally.
+              </div>
+            </span>
+          </label>
+          <button
+            className="button full"
+            type="button"
+            onClick={() => setMode('confirming')}
+            style={{ marginTop: 8 }}
+          >
+            Pull from GitHub into Overleaf
+          </button>
+        </>
       )}
 
       {mode === 'confirming' && (
@@ -1155,12 +1203,21 @@ function PullFromGitHubSection({
             </div>
           )}
           <div
-            className={`banner ${summary.failed + summary.conflict === 0 ? 'success' : 'warning'}`}
+            className={`banner ${summary.failed + summary.conflict + summary.createFailed === 0 ? 'success' : 'warning'}`}
             role="status"
             style={{ marginTop: 6, fontSize: 12 }}
           >
             {summary.written} written · {summary.skipped} skipped · {summary.conflict} conflict · {summary.failed} failed
-            {noOverleafDocs.length > 0 && (
+            {(summary.created > 0 ||
+              summary.createFailed > 0 ||
+              summary.createSkipped > 0) && (
+              <>
+                {' · '}
+                {summary.created} created · {summary.createFailed} create-failed
+                {summary.createSkipped > 0 && <> · {summary.createSkipped} create-skipped</>}
+              </>
+            )}
+            {noOverleafDocs.length > 0 && !createResults && (
               <> · {noOverleafDocs.length} not in Overleaf</>
             )}
             {binarySkipped.length > 0 && (
@@ -1170,10 +1227,25 @@ function PullFromGitHubSection({
           {results && results.length > 0 && (
             <details style={{ marginTop: 6 }}>
               <summary style={{ cursor: 'pointer', fontSize: 11.5 }}>
-                Per-file results ({results.length})
+                Write results ({results.length})
               </summary>
               <ul style={{ marginTop: 4, fontSize: 11.5, paddingLeft: 16 }}>
                 {results.map((r, i) => (
+                  <li key={i}>
+                    <strong>{r.status}</strong> — <code>{r.path}</code>
+                    {r.message ? `: ${r.message}` : ''}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+          {createResults && createResults.length > 0 && (
+            <details style={{ marginTop: 6 }}>
+              <summary style={{ cursor: 'pointer', fontSize: 11.5 }}>
+                Create results ({createResults.length})
+              </summary>
+              <ul style={{ marginTop: 4, fontSize: 11.5, paddingLeft: 16 }}>
+                {createResults.map((r, i) => (
                   <li key={i}>
                     <strong>{r.status}</strong> — <code>{r.path}</code>
                     {r.message ? `: ${r.message}` : ''}

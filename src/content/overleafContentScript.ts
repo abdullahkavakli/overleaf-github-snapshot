@@ -356,6 +356,8 @@ type AnyBridgeMessage = {
   docId?: string;
   ops?: unknown;
   baseVersion?: unknown;
+  path?: unknown;
+  initialContent?: unknown;
 };
 
 chrome.runtime.onMessage.addListener(
@@ -424,6 +426,34 @@ chrome.runtime.onMessage.addListener(
         try {
           const mod = await import('./liveBridgeHandler');
           const result = await mod.handleLiveReadDoc(projectId, docId);
+          sendResponse(result);
+        } catch (e) {
+          sendResponse({
+            ok: false,
+            code: 'unknown',
+            message: e instanceof Error ? e.message : String(e),
+          });
+        }
+      })();
+      return true;
+    }
+    if (message.type === 'LIVE_CREATE_DOC_AT_PATH') {
+      const projectId = typeof message.projectId === 'string' ? message.projectId : '';
+      const path = typeof message.path === 'string' ? message.path : '';
+      const initialContent =
+        typeof message.initialContent === 'string' ? message.initialContent : '';
+      if (!projectId || !path) {
+        sendResponse({
+          ok: false,
+          code: 'unknown',
+          message: 'projectId and path are required',
+        });
+        return false;
+      }
+      void (async () => {
+        try {
+          const mod = await import('./liveBridgeHandler');
+          const result = await mod.handleLiveCreateDocAtPath(projectId, path, initialContent);
           sendResponse(result);
         } catch (e) {
           sendResponse({

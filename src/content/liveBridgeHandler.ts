@@ -23,6 +23,7 @@ import { SocketIo09Client, SocketIo09Error } from './socketIo09';
 import type {
   BridgeFailure,
   BridgeResponse,
+  LiveCreateDocResponseData,
   LiveProjectMetadataResponseData,
   LiveReadDocResponseData,
   LiveSnapshotResponseData,
@@ -683,6 +684,241 @@ export async function handleLiveWriteDoc(
     return {
       ok: true,
       data: { docId, newVersion: postWrite.version, text: postWrite.text },
+    };
+  } finally {
+    client.disconnect();
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Phase-3: create a new doc at a project-relative path. Walks the path
+// mkdir-style (POST /project/:id/folder for missing dirs), creates the
+// doc (POST /project/:id/doc), then optionally seeds initial content
+// via the same applyOtUpdate path the write handler uses.
+//
+// Wire format references match Workshop's vocabulary:
+//   POST /project/:id/folder  body { parent_folder_id, name }  -> { _id, ... }
+//   POST /project/:id/doc     body { parent_folder_id, name }  -> { _id, ... }
+// Both require CSRF (X-Csrf-Token header) + the user's browser session
+// (`credentials: 'include'`). If Overleaf has changed either endpoint
+// we surface a typed failure and the worst case is an orphaned empty
+// doc — never a destructive overwrite of existing content.
+// ──────────────────────────────────────────────────────────────────────────
+
+async function postOverleafJson<T>(
+  url: string,
+  body: unknown,
+  csrfToken: string,
+): Promise<T> {
+  const response = await fetch(url, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      'X-Csrf-Token': csrfToken,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    let detail = '';
+    try {
+      detail = (await response.text()).slice(0, 200);
+    } catch {
+      // ignore
+    }
+    throw new Error(`HTTP ${response.status} ${url}${detail ? ` — ${detail}` : ''}`);
+  }
+  return (await response.json()) as T;
+}
+
+export async function handleLiveCreateDocAtPath(
+  projectId: string,
+  path: string,
+  initialContent: string,
+): Promise<BridgeResponse<LiveCreateDocResponseData>> {
+  if (typeof path !== 'string' || path.length === 0) {
+    return failure('unknown', 'Empty path.');
+  }
+  if (path.startsWith('/') || path.includes('..') || path.endsWith('/')) {
+    return failure(
+      'unknown',
+      `Invalid path "${path}" — must be project-relative, no leading "/", no "..", no trailing "/".`,
+    );
+  }
+  const segments = path.split('/').filter((s) => s.length > 0);
+  if (segments.length === 0) {
+    return failure('unknown', 'Empty path.');
+  }
+  const filename = segments[segments.length - 1]!;
+  const folderSegments = segments.slice(0, -1);
+
+  const csrfToken = extractCsrfFromDocument();
+  if (!csrfToken) {
+    return failure(
+      'protocol_unavailable',
+      'CSRF token not found in the Overleaf project page.',
+      'Refresh the Overleaf tab and try again.',
+    );
+  }
+
+  const session = await openProjectSession(projectId);
+  if (!session.ok) return session;
+  const { client, project, dbg } = session.data;
+
+  try {
+    const root = project.rootFolder?.[0];
+    if (!root || !root._id) {
+      return failure(
+        'project_join_failed',
+        'joinProject did not return a usable rootFolder._id.',
+      );
+    }
+
+    let currentFolderId: string = root._id;
+    let currentFolder: WorkshopFolder = root;
+
+    for (const segName of folderSegments) {
+      const existing = (currentFolder.folders ?? []).find((f) => f.name === segName);
+      if (existing && existing._id) {
+        dbg(`mkdir: existing folder "${segName}" id=${existing._id}`);
+        currentFolderId = existing._id;
+        currentFolder = existing;
+        continue;
+      }
+      dbg(`mkdir: creating folder "${segName}" under ${currentFolderId}`);
+      let created: { _id?: string; name?: string };
+      try {
+        created = await postOverleafJson<{ _id?: string; name?: string }>(
+          `https://www.overleaf.com/project/${encodeURIComponent(projectId)}/folder`,
+          { parent_folder_id: currentFolderId, name: segName },
+          csrfToken,
+        );
+      } catch (e) {
+        return failure(
+          'unknown',
+          `Folder creation failed for "${segName}": ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+      if (!created._id) {
+        return failure('unknown', `Folder creation returned no _id for "${segName}".`);
+      }
+      const newFolder: WorkshopFolder = {
+        _id: created._id,
+        name: segName,
+        folders: [],
+        docs: [],
+        fileRefs: [],
+      };
+      (currentFolder.folders ??= []).push(newFolder);
+      currentFolderId = created._id;
+      currentFolder = newFolder;
+    }
+
+    const existingDoc = (currentFolder.docs ?? []).find((d) => d.name === filename);
+    if (existingDoc) {
+      return failure(
+        'unknown',
+        `Document already exists at "${path}". Use write-back instead of create.`,
+      );
+    }
+    const existingFile = (currentFolder.fileRefs ?? []).find((f) => f.name === filename);
+    if (existingFile) {
+      return failure(
+        'unknown',
+        `A non-doc file already exists at "${path}". Refusing to create a doc with the same name.`,
+      );
+    }
+
+    dbg(`creating doc "${filename}" in folder ${currentFolderId}`);
+    let createdDoc: { _id?: string; name?: string };
+    try {
+      createdDoc = await postOverleafJson<{ _id?: string; name?: string }>(
+        `https://www.overleaf.com/project/${encodeURIComponent(projectId)}/doc`,
+        { parent_folder_id: currentFolderId, name: filename },
+        csrfToken,
+      );
+    } catch (e) {
+      return failure(
+        'unknown',
+        `Doc creation failed for "${filename}": ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    if (!createdDoc._id) {
+      return failure('unknown', `Doc creation returned no _id for "${filename}".`);
+    }
+    const newDocId = createdDoc._id;
+
+    if (initialContent.length === 0) {
+      return {
+        ok: true,
+        data: { docId: newDocId, path, version: 0, text: '' },
+      };
+    }
+
+    // Give the server a brief grace window — a freshly-created doc isn't
+    // always immediately addressable on the realtime channel.
+    await new Promise((r) => setTimeout(r, 250));
+
+    dbg(`joinDoc ${newDocId} (initial seed)`);
+    let initial: JoinDocResult;
+    try {
+      initial = await joinDoc(client, newDocId);
+    } catch (e) {
+      return failure(
+        'document_join_failed',
+        `Doc created but joinDoc failed for content seed: ${e instanceof Error ? e.message : String(e)}. The doc exists but is empty.`,
+        'Open the Overleaf tab and paste content into the new doc manually.',
+      );
+    }
+    if (initial.text !== '') {
+      try { client.emit('leaveDoc', newDocId); } catch { /* ignore */ }
+      return failure(
+        'unknown',
+        `New doc is unexpectedly non-empty (length ${initial.text.length}). Refusing to overwrite to avoid clobbering content.`,
+      );
+    }
+
+    dbg(`applyOtUpdate ${newDocId} insert len=${initialContent.length} v=${initial.version}`);
+    try {
+      await client.emitWithAck<unknown[]>(
+        'applyOtUpdate',
+        [newDocId, { op: [{ p: 0, i: initialContent }], v: initial.version }],
+        20_000,
+      );
+    } catch (e) {
+      try { client.emit('leaveDoc', newDocId); } catch { /* ignore */ }
+      return failure(
+        'unknown',
+        `Doc created but initial content insert failed: ${e instanceof Error ? e.message : String(e)}. The doc exists but is empty.`,
+        'Re-run the pull, or paste content into the doc manually.',
+      );
+    }
+
+    try { client.emit('leaveDoc', newDocId); } catch { /* ignore */ }
+
+    dbg(`joinDoc ${newDocId} (verify seed)`);
+    let verify: JoinDocResult;
+    try {
+      verify = await joinDoc(client, newDocId);
+    } catch (e) {
+      return failure(
+        'document_join_failed',
+        `Doc created and content sent, but verify-read failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    try { client.emit('leaveDoc', newDocId); } catch { /* ignore */ }
+
+    if (verify.text !== initialContent) {
+      return failure(
+        'unknown',
+        `Doc created but verify-read returned different content (server len ${verify.text.length} vs expected ${initialContent.length}).`,
+      );
+    }
+
+    return {
+      ok: true,
+      data: { docId: newDocId, path, version: verify.version, text: verify.text },
     };
   } finally {
     client.disconnect();

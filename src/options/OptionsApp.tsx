@@ -39,6 +39,10 @@ import { writeSelectedFilesBackToOverleaf } from '../overleaf/live/overleafWrite
 import type { WriteBackCandidate, WriteBackResult } from '../overleaf/live/types';
 import { computeSha256 } from '../diff/fileHasher';
 import { sourceFromGitHubBranch } from '../sources/sourceFromGitHubBranch';
+import {
+  createMissingDocsForPull,
+  type CreateResult,
+} from '../sources/pullFromGitHubHelpers';
 
 type SaveState =
   | { kind: 'idle' }
@@ -1120,13 +1124,16 @@ function PullFromGitHubDevPanel({
   const [phase, setPhase] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<WriteBackResult[] | null>(null);
+  const [createResults, setCreateResults] = useState<CreateResult[] | null>(null);
   const [noOverleafDocs, setNoOverleafDocs] = useState<string[]>([]);
   const [binarySkipped, setBinarySkipped] = useState<string[]>([]);
   const [commitSha, setCommitSha] = useState<string | null>(null);
+  const [createMissing, setCreateMissing] = useState<boolean>(false);
 
   const onPull = async () => {
     setError(null);
     setResults(null);
+    setCreateResults(null);
     setNoOverleafDocs([]);
     setBinarySkipped([]);
     setCommitSha(null);
@@ -1169,14 +1176,14 @@ function PullFromGitHubDevPanel({
       //    use that as baseText so the in-pipeline TOCTOU conflict check
       //    has something meaningful to compare.
       const candidates: WriteBackCandidate[] = [];
-      const missing: string[] = [];
+      const toCreate: { path: string; content: string }[] = [];
       const enc = new TextEncoder();
       let i = 0;
       for (const file of snapshot.files) {
         i++;
         const docId = docIdByPath.get(file.path);
         if (!docId) {
-          missing.push(file.path);
+          toCreate.push({ path: file.path, content: file.text ?? '' });
           continue;
         }
         setPhase(
@@ -1203,28 +1210,42 @@ function PullFromGitHubDevPanel({
           baseSha256,
         });
       }
-      setNoOverleafDocs(missing);
+      setNoOverleafDocs(toCreate.map((c) => c.path));
 
-      if (candidates.length === 0) {
+      if (candidates.length === 0 && !(createMissing && toCreate.length > 0)) {
         setError(
-          `None of the GitHub files have a matching doc in Overleaf. Skipped: ${missing.length}.`,
+          `None of the GitHub files have a matching doc in Overleaf. ${toCreate.length} file(s) would need to be created — turn on "Also create new files" to add them.`,
         );
         return;
       }
 
       // 4. Run write-back orchestration with the existing safety gates.
-      setPhase(`Writing ${candidates.length} file(s) back to Overleaf…`);
-      const out = await writeSelectedFilesBackToOverleaf(
-        selectedProjectId,
-        candidates,
-        {
-          requireZipBackup: experimental.requireZipBackupBeforeWriteBack,
-          requireConfirmation: false,
-          allowedExtensions: experimental.allowedWriteBackExtensions,
-          allowBinary: experimental.allowBinaryWriteBack,
-        },
-      );
-      setResults(out);
+      if (candidates.length > 0) {
+        setPhase(`Writing ${candidates.length} file(s) back to Overleaf…`);
+        const out = await writeSelectedFilesBackToOverleaf(
+          selectedProjectId,
+          candidates,
+          {
+            requireZipBackup: experimental.requireZipBackupBeforeWriteBack,
+            requireConfirmation: false,
+            allowedExtensions: experimental.allowedWriteBackExtensions,
+            allowBinary: experimental.allowBinaryWriteBack,
+          },
+        );
+        setResults(out);
+      }
+
+      // 5. Create missing files if opted in. Independent of write-back —
+      //    a writeBack failure on file X doesn't block creating file Y.
+      if (createMissing && toCreate.length > 0) {
+        const created = await createMissingDocsForPull(
+          selectedProjectId,
+          toCreate,
+          experimental.allowedWriteBackExtensions,
+          setPhase,
+        );
+        setCreateResults(created);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -1254,14 +1275,18 @@ function PullFromGitHubDevPanel({
     );
   }
 
-  const summary = results
-    ? {
-        written: results.filter((r) => r.status === 'written').length,
-        skipped: results.filter((r) => r.status === 'skipped').length,
-        conflict: results.filter((r) => r.status === 'conflict').length,
-        failed: results.filter((r) => r.status === 'failed').length,
-      }
-    : null;
+  const summary =
+    results || createResults
+      ? {
+          written: results?.filter((r) => r.status === 'written').length ?? 0,
+          skipped: results?.filter((r) => r.status === 'skipped').length ?? 0,
+          conflict: results?.filter((r) => r.status === 'conflict').length ?? 0,
+          failed: results?.filter((r) => r.status === 'failed').length ?? 0,
+          created: createResults?.filter((r) => r.status === 'created').length ?? 0,
+          createFailed: createResults?.filter((r) => r.status === 'failed').length ?? 0,
+          createSkipped: createResults?.filter((r) => r.status === 'skipped').length ?? 0,
+        }
+      : null;
 
   return (
     <div
@@ -1300,6 +1325,24 @@ function PullFromGitHubDevPanel({
         </select>
       </div>
 
+      <div className="checkbox-row" style={{ marginTop: 8 }}>
+        <input
+          id="pgh-create-missing"
+          type="checkbox"
+          checked={createMissing}
+          onChange={(e) => setCreateMissing(e.target.checked)}
+        />
+        <label htmlFor="pgh-create-missing">
+          Also create new files in Overleaf
+          <div className="hint">
+            For each GitHub file with no matching Overleaf doc, create
+            the doc (and any missing parent folders) and seed it with the
+            GitHub content. Filtered by your allowed write-back
+            extensions. Off by default — flip on intentionally.
+          </div>
+        </label>
+      </div>
+
       <div className="actions" style={{ marginTop: 8 }}>
         <button
           type="button"
@@ -1333,12 +1376,20 @@ function PullFromGitHubDevPanel({
 
       {summary && (
         <div
-          className={`banner ${summary.failed + summary.conflict === 0 ? 'success' : 'info'}`}
+          className={`banner ${summary.failed + summary.conflict + summary.createFailed === 0 ? 'success' : 'info'}`}
           role="status"
           style={{ marginTop: 10 }}
         >
           <strong>Summary:</strong> {summary.written} written, {summary.skipped} skipped, {summary.conflict} conflict, {summary.failed} failed
-          {noOverleafDocs.length > 0 && (
+          {(summary.created > 0 ||
+            summary.createFailed > 0 ||
+            summary.createSkipped > 0) && (
+            <>
+              , {summary.created} created, {summary.createFailed} create-failed
+              {summary.createSkipped > 0 && <>, {summary.createSkipped} create-skipped</>}
+            </>
+          )}
+          {noOverleafDocs.length > 0 && !createResults && (
             <>, {noOverleafDocs.length} file(s) not present in Overleaf</>
           )}
           {binarySkipped.length > 0 && (
@@ -1349,6 +1400,9 @@ function PullFromGitHubDevPanel({
 
       {results && results.length > 0 && (
         <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
+            Write results
+          </div>
           {results.map((r, i) => (
             <div
               key={i}
@@ -1360,6 +1414,31 @@ function PullFromGitHubDevPanel({
                     : 'info'
               }`}
               role={r.status === 'written' ? 'status' : 'alert'}
+              style={{ marginTop: 6, fontSize: 12 }}
+            >
+              <strong>{r.status}</strong> — <code>{r.path}</code>
+              {r.message ? `: ${r.message}` : ''}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {createResults && createResults.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
+            Create results
+          </div>
+          {createResults.map((r, i) => (
+            <div
+              key={i}
+              className={`banner ${
+                r.status === 'created'
+                  ? 'success'
+                  : r.status === 'failed'
+                    ? 'error'
+                    : 'info'
+              }`}
+              role={r.status === 'created' ? 'status' : 'alert'}
               style={{ marginTop: 6, fontSize: 12 }}
             >
               <strong>{r.status}</strong> — <code>{r.path}</code>
