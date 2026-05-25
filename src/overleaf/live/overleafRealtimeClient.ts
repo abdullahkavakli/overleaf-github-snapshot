@@ -1,27 +1,25 @@
-// Real-time client stub for the experimental live-sync mode.
+// Real-time client for the experimental live-sync mode.
 //
-// The full Overleaf Socket.IO protocol requires:
-//   1. GET /socket.io/?EIO=4&transport=polling
-//   2. Negotiate a session id (sid).
-//   3. Open a websocket transport.
-//   4. Emit joinProject(projectId), then joinDoc(docId) for each editable doc.
-//
-// The exact wire format depends on the Overleaf build and changes frequently.
-// Rather than ship a fragile (and AGPL-tainted) reimplementation, this client
-// performs the minimum capability negotiation and reports
-// `protocol_unavailable` if any step is missing — at which point the caller
-// falls back to the ZIP route.
+// The popup itself cannot open a same-origin WebSocket Overleaf will
+// accept (its origin is chrome-extension://, which the server rejects).
+// We instead delegate every per-doc read/write to the content-script
+// bridge, which holds the Socket.IO 0.9 client on the project page.
 //
 // This file deliberately contains NO blind credential handling, NO cookie
 // scraping, and NO third-party socket library import. The browser session
-// is reused implicitly through `credentials: 'include'`.
+// is reused implicitly through the bridge calls that run on overleaf.com.
 
+import {
+  readDocViaBridge,
+  writeDocViaBridge,
+} from './bridgeClient';
 import {
   getActiveDocChannel,
   setActiveDocChannel,
   type DocChannel,
   type DocSnapshot,
 } from './overleafDocumentClient';
+import { diffToOps } from './overleafOt';
 import { LiveSyncError } from './types';
 
 export type ProjectConnection = {
@@ -31,67 +29,44 @@ export type ProjectConnection = {
 
 let activeConnection: ProjectConnection | null = null;
 
-async function probeSocketHandshake(): Promise<void> {
-  const url = `https://www.overleaf.com/socket.io/?EIO=4&transport=polling&t=${Date.now()}`;
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: 'GET',
-      credentials: 'include',
-      redirect: 'follow',
-      cache: 'no-store',
-      headers: { Accept: 'text/plain, */*' },
-    });
-  } catch (e) {
-    throw new LiveSyncError(
-      'socket_connection_failed',
-      `Could not reach Overleaf real-time endpoint: ${e instanceof Error ? e.message : String(e)}`,
-    );
-  }
-  if (response.status === 401 || (response.url && response.url.includes('/login'))) {
-    throw new LiveSyncError('not_logged_in', 'You are not signed in to Overleaf.');
-  }
-  if (!response.ok) {
-    throw new LiveSyncError(
-      'protocol_unavailable',
-      `Overleaf real-time handshake returned HTTP ${response.status}.`,
-    );
-  }
-  const text = await response.text();
-  // Engine.IO v4 handshakes begin with "0{". If the response doesn't look
-  // like one, we don't know how to talk to this server.
-  if (!text.startsWith('0{')) {
-    throw new LiveSyncError(
-      'protocol_unavailable',
-      'Overleaf real-time handshake did not return a recognized payload. Live sync is unavailable on this build.',
-    );
-  }
-}
+// Bridge-backed doc channel. Each read/write is one chrome.tabs.sendMessage
+// round-trip to the content script, which in turn opens its own short-lived
+// Socket.IO connection per request. There is no socket state held in the
+// popup; that's deliberate — the popup can be closed/reopened at any time.
+class BridgeDocChannel implements DocChannel {
+  constructor(private readonly projectId: string) {}
 
-class StubDocChannel implements DocChannel {
-  // The realtime channel is not implemented in this prototype. Any attempt
-  // to read or write a doc must explicitly fail rather than silently return
-  // empty content — silent partial reads would result in destructive
-  // commits.
-  async fetchSnapshot(_docId: string): Promise<DocSnapshot> {
-    throw new LiveSyncError(
-      'protocol_unavailable',
-      'Overleaf real-time document fetch is not implemented in this build.',
-    );
+  async fetchSnapshot(docId: string): Promise<DocSnapshot> {
+    const response = await readDocViaBridge(this.projectId, docId);
+    if (!response.ok) {
+      throw new LiveSyncError(response.code, response.message, response.recovery);
+    }
+    const { version, text } = response.data;
+    return { docId, version, lines: text.split('\n'), text };
   }
+
   async applyUpdate(
-    _docId: string,
-    _oldText: string,
-    _newText: string,
-    _baseVersion: number,
+    docId: string,
+    oldText: string,
+    newText: string,
+    baseVersion: number,
   ): Promise<DocSnapshot> {
-    throw new LiveSyncError(
-      'write_back_not_safe',
-      'Overleaf real-time write-back is not implemented in this build (versioned channel unavailable).',
-    );
+    const ops = diffToOps(oldText, newText);
+    if (ops.length === 0) {
+      // No-op write: re-fetch the current state so the caller's verify
+      // path sees consistent data without burning a write.
+      return this.fetchSnapshot(docId);
+    }
+    const response = await writeDocViaBridge(this.projectId, docId, ops, baseVersion);
+    if (!response.ok) {
+      throw new LiveSyncError(response.code, response.message, response.recovery);
+    }
+    const { newVersion, text } = response.data;
+    return { docId, version: newVersion, lines: text.split('\n'), text };
   }
+
   close(): void {
-    /* no-op */
+    /* no-op — there is no persistent socket on the popup side. */
   }
 }
 
@@ -106,12 +81,11 @@ export async function openProjectConnection(
   }
   closeActiveConnection();
 
-  await probeSocketHandshake();
-
-  // Capability detected, but we don't ship a full Engine.IO client. Install
-  // a stub doc channel so callers receive a clear "not implemented" error
-  // instead of incorrect data.
-  setActiveDocChannel(new StubDocChannel());
+  // No popup-side handshake probe: every bridge read/write triggers its
+  // own connect+joinProject inside the content script and returns a
+  // typed error if anything fails. Probing twice would just slow the
+  // first call without adding signal.
+  setActiveDocChannel(new BridgeDocChannel(projectId));
 
   const connection: ProjectConnection = {
     projectId,

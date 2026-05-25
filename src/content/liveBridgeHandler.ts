@@ -587,19 +587,104 @@ export async function handleLiveReadDoc(
   }
 }
 
-// STUB. Real implementation is the risk-dominated piece of phase 1:
-// send Overleaf's applyOtUpdate over the socket, await the ack, and
-// return the new version. Tracked separately so the protocol shape can
-// be exercised end-to-end first.
+// Send a single OT update over the live socket. Wire vocabulary
+// (`applyOtUpdate`, `[docId, { op, v }]`, err-first ack) is established
+// in Overleaf's published Socket.IO protocol and matches what Overleaf
+// Workshop uses. Concrete safety nets:
+//
+//   1. joinDoc the target first to acquire the doc lock and read the
+//      current version. If currentVersion !== baseVersion, refuse — the
+//      doc moved since the popup computed its diff.
+//   2. Emit applyOtUpdate with the err-first ack convention the rest
+//      of the codebase relies on. Any server-side err shape is surfaced
+//      verbatim as `remote_changed` so the popup can prompt re-read.
+//   3. Re-joinDoc to fetch the authoritative post-write version+text.
+//      The popup then runs the existing verify check (`after.text ===
+//      candidate.newText`) before declaring success. Silent corruption
+//      requires both the server AND the verify-read to lie — extremely
+//      unlikely.
 export async function handleLiveWriteDoc(
-  _projectId: string,
-  _docId: string,
-  _ops: OtOp[],
-  _baseVersion: number,
+  projectId: string,
+  docId: string,
+  ops: OtOp[],
+  baseVersion: number,
 ): Promise<BridgeResponse<LiveWriteDocResponseData>> {
-  return failure(
-    'write_back_not_safe',
-    'Live write-back is not yet wired in this build — bridge protocol exists, OT applyUpdate path is the next slice.',
-    'Use the ZIP-based commit-to-GitHub flow for now; write-back to Overleaf is on the roadmap.',
-  );
+  if (!/^[a-zA-Z0-9]+$/.test(docId)) {
+    return failure('unknown', `Invalid Overleaf doc ID: ${docId}`);
+  }
+  if (!Array.isArray(ops) || ops.length === 0) {
+    return failure('unknown', 'No operations to apply (ops array is empty).');
+  }
+  if (!Number.isInteger(baseVersion) || baseVersion < 0) {
+    return failure('unknown', `Invalid baseVersion: ${baseVersion}`);
+  }
+
+  const session = await openProjectSession(projectId);
+  if (!session.ok) return session;
+  const { client, dbg } = session.data;
+
+  try {
+    // 1. Acquire the doc + verify version.
+    dbg(`phase: joinDoc ${docId} (pre-write)`);
+    let preWrite: JoinDocResult;
+    try {
+      preWrite = await joinDoc(client, docId);
+    } catch (e) {
+      return failure(
+        'document_join_failed',
+        `Could not joinDoc ${docId} before write: ${e instanceof Error ? e.message : String(e)}`,
+        'Refresh the Overleaf tab and retry.',
+      );
+    }
+    if (preWrite.version !== baseVersion) {
+      // best-effort cleanup
+      try { client.emit('leaveDoc', docId); } catch { /* ignore */ }
+      return failure(
+        'remote_changed',
+        `Document version changed since base (popup saw ${baseVersion}, server is at ${preWrite.version}).`,
+        'Re-read the document, recompute the diff, and retry.',
+      );
+    }
+
+    // 2. Apply the update. Err-first ack convention matches the rest of
+    //    the socket client; any err object becomes a rejection here.
+    dbg(`phase: applyOtUpdate ${docId} ops=${ops.length} v=${baseVersion}`);
+    try {
+      await client.emitWithAck<unknown[]>(
+        'applyOtUpdate',
+        [docId, { op: ops, v: baseVersion }],
+        20_000,
+      );
+    } catch (e) {
+      try { client.emit('leaveDoc', docId); } catch { /* ignore */ }
+      const msg = e instanceof Error ? e.message : String(e);
+      return failure(
+        'remote_changed',
+        `Overleaf rejected applyOtUpdate: ${msg}`,
+        'Re-read the document, recompute the diff, and retry.',
+      );
+    }
+
+    // 3. Leave + re-join to read the authoritative post-write state.
+    try { client.emit('leaveDoc', docId); } catch { /* ignore */ }
+    dbg(`phase: joinDoc ${docId} (post-write verify)`);
+    let postWrite: JoinDocResult;
+    try {
+      postWrite = await joinDoc(client, docId);
+    } catch (e) {
+      return failure(
+        'document_join_failed',
+        `Wrote update but could not re-read for verification: ${e instanceof Error ? e.message : String(e)}`,
+        'The write may have landed; reopen the Overleaf tab and inspect.',
+      );
+    }
+    try { client.emit('leaveDoc', docId); } catch { /* ignore */ }
+
+    return {
+      ok: true,
+      data: { docId, newVersion: postWrite.version, text: postWrite.text },
+    };
+  } finally {
+    client.disconnect();
+  }
 }

@@ -12,6 +12,7 @@
 // No blind replace. No automatic conflict resolution. No silent overwrite.
 
 import { fetchOverleafZipSnapshot } from '../overleafZipClient';
+import { fetchProjectMetadataViaBridge } from './bridgeClient';
 import { checkWriteBackConflict } from './conflictDetector';
 import {
   applyDocUpdate,
@@ -19,10 +20,7 @@ import {
   getActiveDocChannel,
 } from './overleafDocumentClient';
 import { openProjectConnection } from './overleafRealtimeClient';
-import {
-  fetchProjectMetadata,
-  flattenProjectTree,
-} from './overleafProjectLoader';
+import { flattenProjectTree } from './overleafProjectLoader';
 import {
   LiveSyncError,
   type OverleafWriteBackOptions,
@@ -101,8 +99,17 @@ export async function writeSelectedFilesBackToOverleaf(
     );
   }
 
-  const metadata = await fetchProjectMetadata(projectId);
-  const entries = flattenProjectTree(metadata.rootFolder);
+  // Resolve doc IDs from the live joinProject tree (authoritative even
+  // on Overleaf builds that no longer embed the bootstrap blob in HTML).
+  const metadataResponse = await fetchProjectMetadataViaBridge(projectId);
+  if (!metadataResponse.ok) {
+    throw new LiveSyncError(
+      metadataResponse.code,
+      `Could not load project metadata: ${metadataResponse.message}`,
+      metadataResponse.recovery,
+    );
+  }
+  const entries = flattenProjectTree(metadataResponse.data.rootFolder);
   const docIdByPath = new Map<string, string>();
   for (const entry of entries) {
     if (entry.kind === 'doc' && entry.id) docIdByPath.set(entry.path, entry.id);
