@@ -31,7 +31,11 @@ export default defineManifest({
   description:
     'Commit Overleaf project snapshots to GitHub; optional live read-only sync via Overleaf\'s session.',
   icons,
-  permissions: ['storage', 'activeTab'],
+  // `scripting` is used for on-demand injection of the Overleaf content
+  // script into tabs that were opened before the extension was installed
+  // or updated. Scope is bounded by host_permissions below, i.e. only
+  // overleaf.com pages can ever receive an injection.
+  permissions: ['storage', 'activeTab', 'scripting'],
   host_permissions: [
     'https://www.overleaf.com/*',
     'https://api.github.com/*',

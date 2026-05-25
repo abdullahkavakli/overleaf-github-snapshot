@@ -26,6 +26,51 @@ import { LiveSyncError, type OverleafLiveSnapshot } from './types';
 
 const LIVE_FETCH_TIMEOUT_MS = 60_000;
 
+// MV3 only auto-injects content scripts at navigation time, so any Overleaf
+// tab opened before the extension was installed or updated will not have
+// the bridge loaded. The user shouldn't have to know that — when the first
+// ping comes back with `protocol_unavailable`, we re-inject the same files
+// the manifest declares for overleaf.com (paths are read from the live
+// manifest so we don't drift from @crxjs/vite-plugin's hashed filenames).
+async function injectOverleafContentScripts(tabId: number): Promise<void> {
+  const manifest = chrome.runtime.getManifest();
+  const entries = manifest.content_scripts ?? [];
+  const files: string[] = [];
+  for (const cs of entries) {
+    const matchesOverleaf = cs.matches?.some((m) => m.includes('overleaf.com'));
+    if (matchesOverleaf && cs.js) files.push(...cs.js);
+  }
+  if (files.length === 0) {
+    throw new Error('Manifest declares no overleaf.com content scripts to inject.');
+  }
+  await chrome.scripting.executeScript({ target: { tabId }, files });
+}
+
+function pingBridge(tabId: number, timeoutMs: number) {
+  return sendBridgeRequest<{ onProjectPage: boolean }>(
+    tabId,
+    { type: 'LIVE_PING', version: BRIDGE_VERSION },
+    timeoutMs,
+  );
+}
+
+// The @crxjs loader does a dynamic import of the real chunk, so the
+// message listener isn't synchronously ready when executeScript() resolves.
+// Poll briefly to cover that async gap. Failures other than
+// "listener-not-yet-registered" still return early.
+async function pingBridgeWithRetry(
+  tabId: number,
+  attempts: number,
+  intervalMs: number,
+) {
+  let last = await pingBridge(tabId, 2_000);
+  for (let i = 1; i < attempts && !last.ok && last.code === 'protocol_unavailable'; i++) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    last = await pingBridge(tabId, 2_000);
+  }
+  return last;
+}
+
 async function findOverleafTab(projectId: string): Promise<chrome.tabs.Tab | null> {
   const tabs = await chrome.tabs.query({
     url: [`https://www.overleaf.com/project/${projectId}*`],
@@ -107,12 +152,24 @@ export async function fetchOverleafLiveSnapshot(
     );
   }
 
-  // Ping first to confirm the new bridge is loaded in this tab.
-  const ping = await sendBridgeRequest<{ onProjectPage: boolean }>(
-    tab.id,
-    { type: 'LIVE_PING', version: BRIDGE_VERSION },
-    5_000,
-  );
+  // Ping first to confirm the bridge is loaded. If it isn't — typically
+  // because the tab was opened before the extension was installed or
+  // updated — programmatically inject the same files the manifest declares
+  // and retry. Falls through to the existing recovery hint if injection
+  // doesn't bring the bridge up.
+  let ping = await pingBridge(tab.id, 5_000);
+  if (!ping.ok && ping.code === 'protocol_unavailable') {
+    try {
+      await injectOverleafContentScripts(tab.id);
+    } catch (e) {
+      throw new LiveSyncError(
+        'protocol_unavailable',
+        `Live bridge not reachable and on-demand injection failed: ${e instanceof Error ? e.message : String(e)}`,
+        'Refresh the Overleaf project tab so the content script reloads.',
+      );
+    }
+    ping = await pingBridgeWithRetry(tab.id, 5, 200);
+  }
   if (!ping.ok) {
     throw new LiveSyncError(
       'protocol_unavailable',
