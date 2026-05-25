@@ -2,19 +2,22 @@
 // normalised list of text ProjectFiles so the live write-back path can
 // loop them into Overleaf.
 //
-// Scope choices for first cut:
+// Scope choices:
 //   - Text files only. Binaries (PDFs, images, etc.) are skipped because
 //     the live write-back path is OT-based and only handles text docs.
 //   - Honors RepoConfig.targetDir by stripping the prefix when present,
 //     so paths come back project-relative (matching what Overleaf shows).
 //   - No ignorePatterns filter — those are commit-direction rules ("don't
 //     ship .aux to GitHub"), irrelevant when reading FROM GitHub.
-//   - Sequential blob fetches; a parallel implementation can come later
-//     once we have a sense of rate-limit headroom in practice.
 //   - Refuses to operate on a truncated tree (GitHub's recursive tree
 //     API returns truncated=true for very large repos — silently
 //     pulling a partial tree would lead to spurious "missing files" in
 //     the writeback diff).
+//   - Optional `allowedExtensions` pre-filter skips files that would be
+//     rejected downstream by writeSelectedFilesBackToOverleaf, saving
+//     one HTTP round-trip per non-allowed file.
+//   - Blob fetches run in parallel batches of N (default 6) since most
+//     of the latency is network RTT to api.github.com rather than CPU.
 
 import { GitHubClient } from '../github/githubClient';
 import { COMMON_BINARY_EXTENSIONS, TEXT_EXTENSIONS } from '../shared/constants';
@@ -64,9 +67,24 @@ export type GitHubBranchSnapshot = {
   skipped: { path: string; reason: string }[];
 };
 
+export type SourceFromGitHubBranchOptions = {
+  // Optional pre-filter that mirrors writeSelectedFilesBackToOverleaf's
+  // extension allowlist. Files with extensions not in this list are
+  // skipped before the blob fetch, saving one HTTP round-trip each.
+  // When omitted, only the isLikelyText filter applies.
+  allowedExtensions?: string[];
+  // Max parallel /git/blobs requests. Defaults to 6, chosen as a balance
+  // between obvious speedup and staying well within GitHub's secondary
+  // rate-limit guidance for authenticated users.
+  concurrency?: number;
+};
+
+const DEFAULT_CONCURRENCY = 6;
+
 export async function sourceFromGitHubBranch(
   token: string,
   config: RepoConfig,
+  options: SourceFromGitHubBranchOptions = {},
 ): Promise<GitHubBranchSnapshot> {
   const client = new GitHubClient(token);
   const ref = await client.getRef(config.owner, config.repo, config.branch);
@@ -79,7 +97,16 @@ export async function sourceFromGitHubBranch(
     );
   }
 
-  const files: ProjectFile[] = [];
+  const allowedExts = options.allowedExtensions
+    ? new Set(options.allowedExtensions)
+    : null;
+  const concurrency = Math.max(1, options.concurrency ?? DEFAULT_CONCURRENCY);
+
+  // Pass 1: walk the tree and decide which blobs to fetch. Doing the
+  // filtering up-front lets us batch the network calls cleanly and keeps
+  // the skipped reasons consistent independent of fetch concurrency.
+  type Job = { projectPath: string; sha: string };
+  const jobs: Job[] = [];
   const skipped: { path: string; reason: string }[] = [];
 
   for (const item of tree.tree) {
@@ -94,23 +121,43 @@ export async function sourceFromGitHubBranch(
       });
       continue;
     }
+    if (allowedExts && !allowedExts.has(getExtension(projectPath))) {
+      skipped.push({
+        path: projectPath,
+        reason: `extension not in allowed write-back list — wouldn't be written anyway`,
+      });
+      continue;
+    }
+    jobs.push({ projectPath, sha: item.sha });
+  }
 
-    const blob = await client.getBlob(config.owner, config.repo, item.sha);
-    // GitHub returns base64 with 60-char line wrapping; modern atob tolerates
-    // whitespace, but stripping is cheap insurance.
-    const bytes = base64ToUint8(blob.content.replace(/\s+/g, ''));
-    const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
-    const sha256 = await computeSha256(bytes);
-
-    files.push({
-      path: projectPath,
-      content: bytes,
-      text,
-      encoding: 'utf-8',
-      sha256,
-      sizeBytes: bytes.byteLength,
-      isBinary: false,
-    });
+  // Pass 2: fetch blobs in parallel batches of `concurrency`. We rely on
+  // GitHub's HTTP/2 multiplexing on api.github.com — issuing N requests
+  // concurrently is the right shape; sequential was just simpler.
+  const files: ProjectFile[] = [];
+  for (let i = 0; i < jobs.length; i += concurrency) {
+    const batch = jobs.slice(i, i + concurrency);
+    const batchResults = await Promise.all(
+      batch.map(async (job) => {
+        const blob = await client.getBlob(config.owner, config.repo, job.sha);
+        // GitHub returns base64 with 60-char line wrapping; modern atob
+        // tolerates whitespace, but stripping is cheap insurance.
+        const bytes = base64ToUint8(blob.content.replace(/\s+/g, ''));
+        const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+        const sha256 = await computeSha256(bytes);
+        const file: ProjectFile = {
+          path: job.projectPath,
+          content: bytes,
+          text,
+          encoding: 'utf-8',
+          sha256,
+          sizeBytes: bytes.byteLength,
+          isBinary: false,
+        };
+        return file;
+      }),
+    );
+    files.push(...batchResults);
   }
 
   files.sort((a, b) => a.path.localeCompare(b.path));

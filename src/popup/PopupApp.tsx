@@ -984,7 +984,9 @@ function PullFromGitHubSection({
     setCommitSha(null);
     try {
       setStep('Fetching GitHub branch…');
-      const snapshot = await sourceFromGitHubBranch(token, repoConfig);
+      const snapshot = await sourceFromGitHubBranch(token, repoConfig, {
+        allowedExtensions: experimental.allowedWriteBackExtensions,
+      });
       setCommitSha(snapshot.commitSha);
       setBinarySkipped(snapshot.skipped.map((s) => s.path));
 

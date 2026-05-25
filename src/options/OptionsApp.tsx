@@ -1149,7 +1149,9 @@ function PullFromGitHubDevPanel({
     try {
       // 1. Fetch the GitHub branch.
       setPhase('Fetching GitHub branch…');
-      const snapshot = await sourceFromGitHubBranch(link.token, link.repo);
+      const snapshot = await sourceFromGitHubBranch(link.token, link.repo, {
+        allowedExtensions: experimental.allowedWriteBackExtensions,
+      });
       setCommitSha(snapshot.commitSha);
       setBinarySkipped(snapshot.skipped.map((s) => s.path));
 
