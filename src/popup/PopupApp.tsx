@@ -9,12 +9,18 @@ import type {
   ProjectLink,
   ProjectLinkMap,
   RepoConfig,
+  UIPreferences,
 } from '../shared/types';
-import { DEFAULT_EXPERIMENTAL_CONFIG, DEFAULT_REPO_CONFIG } from '../shared/constants';
+import {
+  DEFAULT_EXPERIMENTAL_CONFIG,
+  DEFAULT_REPO_CONFIG,
+  DEFAULT_UI_PREFERENCES,
+} from '../shared/constants';
 import {
   clearLegacySingleConfig,
   getExperimentalConfig,
   getProjectLinkMap,
+  getUIPreferences,
   isConfigured,
   isLinkComplete,
   readLegacySingleConfig,
@@ -80,23 +86,32 @@ export function Popup(): React.ReactElement {
   const [experimental, setExperimental] = useState<ExperimentalConfig>(
     DEFAULT_EXPERIMENTAL_CONFIG,
   );
+  const [uiPrefs, setUiPrefs] = useState<UIPreferences>(DEFAULT_UI_PREFERENCES);
   const [overleafContext, setOverleafContext] =
     useState<OverleafProjectContext | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
+  // Sticky for the lifetime of this popup mount: once the stable
+  // "Fetch from current Overleaf project" action has failed, the manual
+  // ZIP upload section is revealed and stays revealed. We don't reset on
+  // restart() because re-hiding after the user just learned the fallback
+  // exists would be jarring.
+  const [automaticFetchFailed, setAutomaticFetchFailed] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     void (async () => {
       try {
-        const [ctx, map, e, legacy] = await Promise.all([
+        const [ctx, map, e, ui, legacy] = await Promise.all([
           getActiveOverleafProjectContext(),
           getProjectLinkMap(),
           getExperimentalConfig(),
+          getUIPreferences(),
           readLegacySingleConfig(),
         ]);
         setOverleafContext(ctx);
         setLinkMap(map);
         setExperimental(e);
+        setUiPrefs(ui);
 
         if (ctx) {
           const existing = map[ctx.projectId];
@@ -217,6 +232,7 @@ export function Popup(): React.ReactElement {
       const snapshot = await sourceFromOverleafZipRoute(overleafContext.projectId);
       await beginPreview(snapshot);
     } catch (e) {
+      setAutomaticFetchFailed(true);
       let message: string;
       if (e instanceof OverleafZipFetchError) {
         message = `${formatOverleafZipFetchError(e)} Automatic Overleaf export failed. You can still download the source ZIP manually from Overleaf and select it here.`;
@@ -390,6 +406,11 @@ export function Popup(): React.ReactElement {
             projectId={activeProjectId}
             overleafContext={overleafContext}
             experimental={experimental}
+            showManual={
+              !overleafContext ||
+              automaticFetchFailed ||
+              uiPrefs.alwaysShowManualUpload
+            }
             onAutomatic={handleAutomaticFetch}
             onLiveReadOnly={handleLiveReadOnly}
             onChooseFile={onFileChange}
@@ -761,6 +782,7 @@ function ReadyView({
   projectId,
   overleafContext,
   experimental,
+  showManual,
   onAutomatic,
   onLiveReadOnly,
   onChooseFile,
@@ -770,6 +792,7 @@ function ReadyView({
   projectId: string | null;
   overleafContext: OverleafProjectContext | null;
   experimental: ExperimentalConfig;
+  showManual: boolean;
   onAutomatic: () => void;
   onLiveReadOnly: () => void;
   onChooseFile: (ev: React.ChangeEvent<HTMLInputElement>) => void;
@@ -807,26 +830,28 @@ function ReadyView({
         )}
       </section>
 
-      <section className="mode-section">
-        <h2 className="mode-title">
-          <span className="mode-badge fallback">Fallback</span>
-          Manual ZIP upload
-        </h2>
-        <div className="muted">
-          Download the Overleaf <strong>Source</strong> ZIP from{' '}
-          <em>Menu → Source</em>, then select it below.
-        </div>
-        <div className="file-input" style={{ marginTop: 6 }}>
-          <label htmlFor="zipInput">Overleaf source ZIP</label>
-          <input
-            id="zipInput"
-            ref={inputRef}
-            type="file"
-            accept=".zip,application/zip,application/x-zip-compressed"
-            onChange={onChooseFile}
-          />
-        </div>
-      </section>
+      {showManual && (
+        <section className="mode-section">
+          <h2 className="mode-title">
+            <span className="mode-badge fallback">Fallback</span>
+            Manual ZIP upload
+          </h2>
+          <div className="muted">
+            Download the Overleaf <strong>Source</strong> ZIP from{' '}
+            <em>Menu → Source</em>, then select it below.
+          </div>
+          <div className="file-input" style={{ marginTop: 6 }}>
+            <label htmlFor="zipInput">Overleaf source ZIP</label>
+            <input
+              id="zipInput"
+              ref={inputRef}
+              type="file"
+              accept=".zip,application/zip,application/x-zip-compressed"
+              onChange={onChooseFile}
+            />
+          </div>
+        </section>
+      )}
 
       {experimental.experimentalLiveSyncEnabled && (
         <section className="mode-section experimental">

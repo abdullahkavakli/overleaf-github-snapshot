@@ -81,3 +81,7 @@ export type ExperimentalConfig = {
   allowBinaryWriteBack: boolean;
   allowedWriteBackExtensions: string[];
 };
+
+export type UIPreferences = {
+  alwaysShowManualUpload: boolean;
+};

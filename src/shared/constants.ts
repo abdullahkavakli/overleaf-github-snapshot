@@ -1,4 +1,4 @@
-import type { ExperimentalConfig, RepoConfig } from './types';
+import type { ExperimentalConfig, RepoConfig, UIPreferences } from './types';
 
 export const STORAGE_KEYS = {
   // legacy — read-only, consumed once by the per-project migration
@@ -6,6 +6,7 @@ export const STORAGE_KEYS = {
   REPO_CONFIG: 'repo_config',
   PROJECT_LINKS: 'project_links',
   EXPERIMENTAL_CONFIG: 'experimental_config',
+  UI_PREFERENCES: 'ui_preferences',
 } as const;
 
 export const DEFAULT_ALLOWED_WRITE_BACK_EXTENSIONS: string[] = [
@@ -27,6 +28,10 @@ export const DEFAULT_EXPERIMENTAL_CONFIG: ExperimentalConfig = {
   requireConfirmationBeforeWriteBack: true,
   allowBinaryWriteBack: false,
   allowedWriteBackExtensions: [...DEFAULT_ALLOWED_WRITE_BACK_EXTENSIONS],
+};
+
+export const DEFAULT_UI_PREFERENCES: UIPreferences = {
+  alwaysShowManualUpload: false,
 };
 
 export const DEFAULT_IGNORE_PATTERNS: string[] = [

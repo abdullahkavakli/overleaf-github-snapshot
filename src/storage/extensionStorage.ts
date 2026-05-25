@@ -3,11 +3,13 @@ import type {
   ProjectLink,
   ProjectLinkMap,
   RepoConfig,
+  UIPreferences,
 } from '../shared/types';
 import {
   DEFAULT_ALLOWED_WRITE_BACK_EXTENSIONS,
   DEFAULT_EXPERIMENTAL_CONFIG,
   DEFAULT_REPO_CONFIG,
+  DEFAULT_UI_PREFERENCES,
   STORAGE_KEYS,
 } from '../shared/constants';
 
@@ -157,4 +159,21 @@ export async function setExperimentalConfig(config: ExperimentalConfig): Promise
 
 export async function clearExperimentalConfig(): Promise<void> {
   await chromeStorageRemove(STORAGE_KEYS.EXPERIMENTAL_CONFIG);
+}
+
+export async function getUIPreferences(): Promise<UIPreferences> {
+  const result = await chromeStorageGet<Partial<UIPreferences>>(
+    STORAGE_KEYS.UI_PREFERENCES,
+  );
+  const stored = result[STORAGE_KEYS.UI_PREFERENCES];
+  if (!stored) return { ...DEFAULT_UI_PREFERENCES };
+  return { ...DEFAULT_UI_PREFERENCES, ...stored };
+}
+
+export async function setUIPreferences(prefs: UIPreferences): Promise<void> {
+  await chromeStorageSet({ [STORAGE_KEYS.UI_PREFERENCES]: prefs });
+}
+
+export async function clearUIPreferences(): Promise<void> {
+  await chromeStorageRemove(STORAGE_KEYS.UI_PREFERENCES);
 }

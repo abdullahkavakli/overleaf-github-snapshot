@@ -5,23 +5,28 @@ import type {
   ProjectLink,
   ProjectLinkMap,
   RepoConfig,
+  UIPreferences,
 } from '../shared/types';
 import {
   DEFAULT_ALLOWED_WRITE_BACK_EXTENSIONS,
   DEFAULT_EXPERIMENTAL_CONFIG,
   DEFAULT_IGNORE_PATTERNS,
   DEFAULT_REPO_CONFIG,
+  DEFAULT_UI_PREFERENCES,
 } from '../shared/constants';
 import {
   clearExperimentalConfig,
   clearLegacySingleConfig,
   clearProjectLinks,
+  clearUIPreferences,
   getExperimentalConfig,
   getProjectLinkMap,
+  getUIPreferences,
   isConfigured,
   removeProjectLink,
   setExperimentalConfig,
   setProjectLink,
+  setUIPreferences,
 } from '../storage/extensionStorage';
 import { testConnection } from '../github/githubClient';
 import { normalizeOverleafProjectId } from '../overleaf/overleafContext';
@@ -52,6 +57,8 @@ export function Options(): React.ReactElement {
     DEFAULT_ALLOWED_WRITE_BACK_EXTENSIONS.join('\n'),
   );
   const [expSave, setExpSave] = useState<SaveState>({ kind: 'idle' });
+  const [uiPrefs, setUiPrefs] = useState<UIPreferences>(DEFAULT_UI_PREFERENCES);
+  const [uiPrefsSaveError, setUiPrefsSaveError] = useState<string | null>(null);
 
   const reload = async () => {
     const map = await getProjectLinkMap();
@@ -60,18 +67,35 @@ export function Options(): React.ReactElement {
 
   useEffect(() => {
     void (async () => {
-      const [map, e] = await Promise.all([
+      const [map, e, ui] = await Promise.all([
         getProjectLinkMap(),
         getExperimentalConfig(),
+        getUIPreferences(),
       ]);
       setLinks(map);
       setExperimental(e);
       setExtText(
         (e.allowedWriteBackExtensions ?? DEFAULT_ALLOWED_WRITE_BACK_EXTENSIONS).join('\n'),
       );
+      setUiPrefs(ui);
       setLoaded(true);
     })();
   }, []);
+
+  // Auto-saves on toggle so users don't have to hunt for a save button on a
+  // single-checkbox section. If the write fails we surface the error inline
+  // and revert the optimistic state so the UI matches storage.
+  const updateUiPrefs = async (next: UIPreferences) => {
+    const previous = uiPrefs;
+    setUiPrefs(next);
+    setUiPrefsSaveError(null);
+    try {
+      await setUIPreferences(next);
+    } catch (e) {
+      setUiPrefs(previous);
+      setUiPrefsSaveError(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   const startAdd = () => {
     setEditError(null);
@@ -154,7 +178,7 @@ export function Options(): React.ReactElement {
   const resetAll = async () => {
     if (
       !confirm(
-        'Reset all settings? This clears every project→repo mapping (including tokens), the legacy single config, and experimental settings.',
+        'Reset all settings? This clears every project→repo mapping (including tokens), the legacy single config, display preferences, and experimental settings.',
       )
     ) {
       return;
@@ -163,12 +187,15 @@ export function Options(): React.ReactElement {
       clearProjectLinks(),
       clearLegacySingleConfig(),
       clearExperimentalConfig(),
+      clearUIPreferences(),
     ]);
     setLinks({});
     setEditing(null);
     setExperimental(DEFAULT_EXPERIMENTAL_CONFIG);
     setExtText(DEFAULT_ALLOWED_WRITE_BACK_EXTENSIONS.join('\n'));
     setExpSave({ kind: 'idle' });
+    setUiPrefs(DEFAULT_UI_PREFERENCES);
+    setUiPrefsSaveError(null);
   };
 
   const saveExperimental = async () => {
@@ -246,6 +273,36 @@ export function Options(): React.ReactElement {
             <button type="button" className="button primary" onClick={startAdd}>
               Add mapping
             </button>
+          </div>
+        )}
+      </section>
+
+      <section aria-labelledby="sec-display">
+        <h2 id="sec-display">Popup display</h2>
+        <div className="checkbox-row">
+          <input
+            id="alwaysShowManualUpload"
+            type="checkbox"
+            checked={uiPrefs.alwaysShowManualUpload}
+            onChange={(e) =>
+              void updateUiPrefs({
+                ...uiPrefs,
+                alwaysShowManualUpload: e.target.checked,
+              })
+            }
+          />
+          <label htmlFor="alwaysShowManualUpload">
+            Always show Manual ZIP upload
+            <div className="hint">
+              By default the popup hides the <em>Manual ZIP upload</em> section
+              until <em>Fetch from current Overleaf project</em> fails. Turn
+              this on to always show it.
+            </div>
+          </label>
+        </div>
+        {uiPrefsSaveError && (
+          <div className="banner error" role="alert" style={{ marginTop: 10 }}>
+            Save failed: {uiPrefsSaveError}
           </div>
         )}
       </section>
