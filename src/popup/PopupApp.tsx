@@ -873,64 +873,78 @@ function ReadyView({
         </section>
       )}
 
-      {experimental.experimentalLiveSyncEnabled && (
+      {experimental.experimentalLiveSyncEnabled &&
+        experimental.liveReadOnlyPullEnabled && (
+          <section className="mode-section experimental">
+            <h2 className="mode-title">
+              <span className="mode-badge experimental">Experimental</span>
+              Live read-only pull (Overleaf → GitHub)
+            </h2>
+            <div className="muted">
+              Pulls <strong>every</strong> doc and file from Overleaf via the
+              live session, then runs the same diff/commit pipeline as the
+              ZIP route. Slower than the ZIP route for large projects — the
+              ZIP route above is always available as a faster alternative.
+            </div>
+            <button
+              className="button full"
+              type="button"
+              onClick={onLiveReadOnly}
+              disabled={!overleafContext}
+              title={
+                overleafContext
+                  ? 'Pull docs + files via the live Overleaf session, then commit to GitHub'
+                  : 'Open the Overleaf project tab to enable live read-only pull'
+              }
+              style={{ marginTop: 8 }}
+            >
+              Live read-only pull from Overleaf
+            </button>
+            <div className="muted" style={{ marginTop: 4, fontSize: 11.5 }}>
+              Status: implemented via a content-script bridge on the Overleaf
+              project tab (Socket.IO 0.9 / joinProject / joinDoc). Depends on
+              Overleaf's live protocol staying stable; if anything moves you
+              will see a typed error and the ZIP route remains available.
+            </div>
+          </section>
+        )}
+
+      {experimental.experimentalLiveSyncEnabled &&
+        experimental.overleafWriteBackEnabled &&
+        overleafContext && (
+          <PullFromGitHubSection
+            projectId={overleafContext.projectId}
+            repoConfig={config}
+            token={token}
+            experimental={experimental}
+          />
+        )}
+      {experimental.experimentalLiveSyncEnabled &&
+        experimental.overleafWriteBackEnabled &&
+        !overleafContext && (
+          <section className="mode-section experimental">
+            <h2 className="mode-title">
+              <span className="mode-badge experimental">Experimental</span>
+              Pull from GitHub into Overleaf
+            </h2>
+            <div className="muted">
+              Open the Overleaf project tab to enable. Live write-back
+              requires the project's tab to be open (the content-script
+              bridge writes from overleaf.com origin).
+            </div>
+          </section>
+        )}
+
+      {experimental.experimentalLiveSyncEnabled && experimental.localReplicaEnabled && (
         <section className="mode-section experimental">
           <h2 className="mode-title">
             <span className="mode-badge experimental">Experimental</span>
-            Live Sync
+            Local replica
           </h2>
           <div className="muted">
-            These features depend on Overleaf internals that may break without
-            warning. The ZIP route above is always available as a fallback.
+            Note: the local-replica module is present in the codebase but
+            has no popup UI yet — its flag has no visible effect.
           </div>
-          {experimental.liveReadOnlyPullEnabled && (
-            <>
-              <button
-                className="button full"
-                type="button"
-                onClick={onLiveReadOnly}
-                disabled={!overleafContext}
-                title={
-                  overleafContext
-                    ? 'Pull docs + files via the live Overleaf session, then commit to GitHub'
-                    : 'Open the Overleaf project tab to enable live read-only pull'
-                }
-                style={{ marginTop: 8 }}
-              >
-                Live read-only pull from Overleaf
-              </button>
-              <div className="muted" style={{ marginTop: 4, fontSize: 11.5 }}>
-                Status: implemented via a content-script bridge on the Overleaf
-                project tab (Socket.IO 0.9 / joinProject / joinDoc). Depends on
-                Overleaf's live protocol staying stable; if anything moves you
-                will see a typed error and the ZIP route remains available.
-                If you just installed/updated the extension, refresh the
-                Overleaf tab once so the bridge can load.
-              </div>
-            </>
-          )}
-          {experimental.overleafWriteBackEnabled && overleafContext && (
-            <PullFromGitHubSection
-              projectId={overleafContext.projectId}
-              repoConfig={config}
-              token={token}
-              experimental={experimental}
-            />
-          )}
-          {experimental.overleafWriteBackEnabled && !overleafContext && (
-            <div className="muted" style={{ marginTop: 8, fontSize: 11.5 }}>
-              Open the Overleaf project tab to enable <em>Pull from GitHub
-              into Overleaf</em>. Live write-back requires the project's
-              tab to be open (the content-script bridge writes from
-              overleaf.com origin).
-            </div>
-          )}
-          {experimental.localReplicaEnabled && (
-            <div className="muted" style={{ marginTop: 8, fontSize: 11.5 }}>
-              Note: the local-replica module is present in the codebase
-              but has no popup UI yet — its flag has no visible effect.
-            </div>
-          )}
         </section>
       )}
     </>
@@ -1101,17 +1115,18 @@ function PullFromGitHubSection({
       : null;
 
   return (
-    <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px dashed var(--border)' }}>
-      <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>
+    <section className="mode-section experimental">
+      <h2 className="mode-title">
+        <span className="mode-badge experimental">Experimental</span>
         Pull from GitHub into Overleaf
-      </div>
-      <div className="muted" style={{ fontSize: 11.5 }}>
+      </h2>
+      <div className="muted">
         Reverses the snapshot direction. Reads <code>{repoConfig.branch}</code>{' '}
         HEAD from <code>{repoConfig.owner}/{repoConfig.repo}</code>
         {repoConfig.targetDir ? <> under <code>{repoConfig.targetDir}/</code></> : null}
-        {' '}and writes each matching text file back to Overleaf via the live
-        bridge. New files (in GitHub but not Overleaf) are skipped in this
-        build.
+        {' '}and writes each changed text file back to Overleaf via the live
+        bridge. Only docs that differ are written. New files (in GitHub but
+        not Overleaf) are skipped unless you opt in below.
       </div>
 
       {mode === 'idle' && (
@@ -1285,7 +1300,7 @@ function PullFromGitHubSection({
           </button>
         </>
       )}
-    </div>
+    </section>
   );
 }
 

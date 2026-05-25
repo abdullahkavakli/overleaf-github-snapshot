@@ -369,10 +369,13 @@ export function Options(): React.ReactElement {
                 }
               />
               <label htmlFor="liveReadOnlyPullEnabled">
-                Enable read-only live pull
+                Enable live read-only pull (Overleaf → GitHub)
                 <div className="hint">
-                  Read Overleaf project files via the live session instead of the
-                  ZIP export. Read-only — never modifies Overleaf.
+                  Read every doc and file from Overleaf via the live session,
+                  then commit to GitHub. Slower than the ZIP route on large
+                  projects. Read-only — never modifies Overleaf. Independent
+                  of the write-back toggle below — leave this off if you only
+                  want <em>Pull from GitHub into Overleaf</em>.
                 </div>
               </label>
             </div>
@@ -390,10 +393,13 @@ export function Options(): React.ReactElement {
                 }
               />
               <label htmlFor="overleafWriteBackEnabled">
-                Enable explicit Overleaf write-back
+                Enable Overleaf write-back (GitHub → Overleaf)
                 <div className="hint">
-                  Allow pushing selected text files back to Overleaf with a typed
-                  confirmation. Disabled by default. Conflicts are always blocked.
+                  Powers the <em>Pull from GitHub into Overleaf</em> section
+                  in the popup, the Pull-from-GitHub dev panel, and the
+                  single-doc developer write-back test below. Each write
+                  goes through the conflict detector and OT verify path.
+                  Independent of the read-only pull toggle above.
                 </div>
               </label>
             </div>
