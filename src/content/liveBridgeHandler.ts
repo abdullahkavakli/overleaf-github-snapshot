@@ -1021,6 +1021,10 @@ async function postOverleafMultipartUpload(
   form.append('qqfilename', filename);
   form.append('qquuid', generateUuid());
   form.append('qqtotalfilesize', String(bytes.length));
+  // Belt-and-braces: also send folder_id in the form body. Some
+  // Overleaf builds read it from req.body rather than req.query, and
+  // sending both is harmless.
+  form.append('folder_id', parentFolderId);
 
   const url = `https://www.overleaf.com/project/${encodeURIComponent(
     projectId,
@@ -1033,6 +1037,13 @@ async function postOverleafMultipartUpload(
       // Do NOT set Content-Type — the browser fills in the multipart
       // boundary automatically when body is a FormData.
       'X-Csrf-Token': csrfToken,
+      // Many web frameworks (Overleaf included) gate the upload route
+      // behind an XHR-only check as a CSRF/scraping defense. Without
+      // this header the server can reject with a generic-looking
+      // `invalid_filename` rather than the more obvious "not an AJAX
+      // request" error.
+      'X-Requested-With': 'XMLHttpRequest',
+      Accept: 'application/json',
     },
     body: form,
   });
