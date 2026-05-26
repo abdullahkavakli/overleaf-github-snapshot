@@ -1144,7 +1144,9 @@ function PullFromGitHubDevPanel({
   const [results, setResults] = useState<WriteBackResult[] | null>(null);
   const [createResults, setCreateResults] = useState<CreateResult[] | null>(null);
   const [noOverleafDocs, setNoOverleafDocs] = useState<string[]>([]);
-  const [binarySkipped, setBinarySkipped] = useState<string[]>([]);
+  const [sourceSkipped, setSourceSkipped] = useState<
+    { path: string; reason: string }[]
+  >([]);
   const [commitSha, setCommitSha] = useState<string | null>(null);
   const [createMissing, setCreateMissing] = useState<boolean>(false);
 
@@ -1153,7 +1155,7 @@ function PullFromGitHubDevPanel({
     setResults(null);
     setCreateResults(null);
     setNoOverleafDocs([]);
-    setBinarySkipped([]);
+    setSourceSkipped([]);
     setCommitSha(null);
     setBusy('pulling');
 
@@ -1171,7 +1173,7 @@ function PullFromGitHubDevPanel({
         allowedExtensions: experimental.allowedWriteBackExtensions,
       });
       setCommitSha(snapshot.commitSha);
-      setBinarySkipped(snapshot.skipped.map((s) => s.path));
+      setSourceSkipped(snapshot.skipped);
 
       if (snapshot.files.length === 0) {
         setError(
@@ -1308,6 +1310,11 @@ function PullFromGitHubDevPanel({
         }
       : null;
 
+  const binaryItems = sourceSkipped.filter((s) => s.reason.startsWith('binary'));
+  const extFilteredItems = sourceSkipped.filter(
+    (s) => !s.reason.startsWith('binary'),
+  );
+
   return (
     <div
       style={{
@@ -1412,8 +1419,14 @@ function PullFromGitHubDevPanel({
           {noOverleafDocs.length > 0 && !createResults && (
             <>, {noOverleafDocs.length} file(s) not present in Overleaf</>
           )}
-          {binarySkipped.length > 0 && (
-            <>, {binarySkipped.length} binary/unknown file(s) in GitHub not pulled</>
+          {binaryItems.length > 0 && (
+            <>, {binaryItems.length} binary file(s) in GitHub not pulled</>
+          )}
+          {extFilteredItems.length > 0 && (
+            <>
+              , {extFilteredItems.length} file(s) skipped (extension not in
+              allowed write-back list)
+            </>
           )}
         </div>
       )}
@@ -1468,11 +1481,11 @@ function PullFromGitHubDevPanel({
         </div>
       )}
 
-      {(noOverleafDocs.length > 0 || binarySkipped.length > 0) && (
+      {(noOverleafDocs.length > 0 || sourceSkipped.length > 0) && (
         <details style={{ marginTop: 10 }}>
           <summary style={{ cursor: 'pointer', fontSize: 12 }}>
             Show files not pulled (
-            {noOverleafDocs.length + binarySkipped.length})
+            {noOverleafDocs.length + sourceSkipped.length})
           </summary>
           <ul style={{ marginTop: 6, fontSize: 12 }}>
             {noOverleafDocs.map((p) => (
@@ -1481,10 +1494,17 @@ function PullFromGitHubDevPanel({
                 file-creation, not yet supported)
               </li>
             ))}
-            {binarySkipped.map((p) => (
-              <li key={`bin-${p}`}>
-                <code>{p}</code> — binary or unknown extension (text-only
-                in this build)
+            {binaryItems.map((s) => (
+              <li key={`bin-${s.path}`}>
+                <code>{s.path}</code> — binary or unknown extension
+                (text-only in this build)
+              </li>
+            ))}
+            {extFilteredItems.map((s) => (
+              <li key={`ext-${s.path}`}>
+                <code>{s.path}</code> — extension not in allowed write-back
+                list (add the extension under <em>Allowed write-back
+                extensions</em> above to include)
               </li>
             ))}
           </ul>

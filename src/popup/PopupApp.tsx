@@ -973,7 +973,9 @@ function PullFromGitHubSection({
   const [results, setResults] = useState<WriteBackResult[] | null>(null);
   const [createResults, setCreateResults] = useState<CreateResult[] | null>(null);
   const [noOverleafDocs, setNoOverleafDocs] = useState<string[]>([]);
-  const [binarySkipped, setBinarySkipped] = useState<string[]>([]);
+  const [sourceSkipped, setSourceSkipped] = useState<
+    { path: string; reason: string }[]
+  >([]);
   const [commitSha, setCommitSha] = useState<string | null>(null);
   const [createMissing, setCreateMissing] = useState<boolean>(false);
 
@@ -984,7 +986,7 @@ function PullFromGitHubSection({
     setResults(null);
     setCreateResults(null);
     setNoOverleafDocs([]);
-    setBinarySkipped([]);
+    setSourceSkipped([]);
     setCommitSha(null);
   };
 
@@ -994,7 +996,7 @@ function PullFromGitHubSection({
     setResults(null);
     setCreateResults(null);
     setNoOverleafDocs([]);
-    setBinarySkipped([]);
+    setSourceSkipped([]);
     setCommitSha(null);
     try {
       setStep('Fetching GitHub branch…');
@@ -1002,7 +1004,7 @@ function PullFromGitHubSection({
         allowedExtensions: experimental.allowedWriteBackExtensions,
       });
       setCommitSha(snapshot.commitSha);
-      setBinarySkipped(snapshot.skipped.map((s) => s.path));
+      setSourceSkipped(snapshot.skipped);
 
       if (snapshot.files.length === 0) {
         setError(
@@ -1113,6 +1115,9 @@ function PullFromGitHubSection({
           createSkipped: createResults?.filter((r) => r.status === 'skipped').length ?? 0,
         }
       : null;
+
+  const binaryItems = sourceSkipped.filter((s) => s.reason.startsWith('binary'));
+  const extFilteredItems = sourceSkipped.filter((s) => !s.reason.startsWith('binary'));
 
   return (
     <section className="mode-section experimental">
@@ -1237,8 +1242,11 @@ function PullFromGitHubSection({
             {noOverleafDocs.length > 0 && !createResults && (
               <> · {noOverleafDocs.length} not in Overleaf</>
             )}
-            {binarySkipped.length > 0 && (
-              <> · {binarySkipped.length} binary/unknown</>
+            {binaryItems.length > 0 && (
+              <> · {binaryItems.length} binary</>
+            )}
+            {extFilteredItems.length > 0 && (
+              <> · {extFilteredItems.length} ext-filtered</>
             )}
           </div>
           {results && results.length > 0 && (
@@ -1271,10 +1279,11 @@ function PullFromGitHubSection({
               </ul>
             </details>
           )}
-          {(noOverleafDocs.length > 0 || binarySkipped.length > 0) && (
+          {(noOverleafDocs.length > 0 || sourceSkipped.length > 0) && (
             <details style={{ marginTop: 4 }}>
               <summary style={{ cursor: 'pointer', fontSize: 11.5 }}>
-                Files not pulled ({noOverleafDocs.length + binarySkipped.length})
+                Files not pulled (
+                {noOverleafDocs.length + sourceSkipped.length})
               </summary>
               <ul style={{ marginTop: 4, fontSize: 11.5, paddingLeft: 16 }}>
                 {noOverleafDocs.map((p) => (
@@ -1282,9 +1291,15 @@ function PullFromGitHubSection({
                     <code>{p}</code> — not in Overleaf
                   </li>
                 ))}
-                {binarySkipped.map((p) => (
-                  <li key={`bin-${p}`}>
-                    <code>{p}</code> — binary or unknown
+                {binaryItems.map((s) => (
+                  <li key={`bin-${s.path}`}>
+                    <code>{s.path}</code> — binary or unknown extension
+                  </li>
+                ))}
+                {extFilteredItems.map((s) => (
+                  <li key={`ext-${s.path}`}>
+                    <code>{s.path}</code> — extension not in allowed
+                    write-back list
                   </li>
                 ))}
               </ul>
