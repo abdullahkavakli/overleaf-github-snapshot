@@ -356,168 +356,180 @@ export function Options(): React.ReactElement {
 
         {experimental.experimentalLiveSyncEnabled && (
           <div id="experimental-suboptions" className="experimental-suboptions">
-            <div className="checkbox-row" style={{ marginTop: 14 }}>
-              <input
-                id="liveReadOnlyPullEnabled"
-                type="checkbox"
-                checked={experimental.liveReadOnlyPullEnabled}
-                onChange={(e) =>
-                  setExperimental({
-                    ...experimental,
-                    liveReadOnlyPullEnabled: e.target.checked,
-                  })
-                }
-              />
-              <label htmlFor="liveReadOnlyPullEnabled">
-                Enable live read-only pull (Overleaf → GitHub)
-                <div className="hint">
-                  Read every doc and file from Overleaf via the live session,
-                  then commit to GitHub. Slower than the ZIP route on large
-                  projects. Read-only — never modifies Overleaf. Independent
-                  of the write-back toggle below — leave this off if you only
-                  want <em>Pull from GitHub into Overleaf</em>.
-                </div>
-              </label>
-            </div>
 
-            <div className="checkbox-row" style={{ marginTop: 14 }}>
-              <input
-                id="overleafWriteBackEnabled"
-                type="checkbox"
-                checked={experimental.overleafWriteBackEnabled}
-                onChange={(e) =>
-                  setExperimental({
-                    ...experimental,
-                    overleafWriteBackEnabled: e.target.checked,
-                  })
-                }
-              />
-              <label htmlFor="overleafWriteBackEnabled">
-                Enable Overleaf write-back (GitHub → Overleaf)
-                <div className="hint">
-                  Powers the <em>Pull from GitHub into Overleaf</em> section
-                  in the popup, the Pull-from-GitHub dev panel, and the
-                  single-doc developer write-back test below. Each write
-                  goes through the conflict detector and OT verify path.
-                  Independent of the read-only pull toggle above.
-                </div>
-              </label>
-            </div>
-
-            <div className="checkbox-row" style={{ marginTop: 14 }}>
-              <input
-                id="localReplicaEnabled"
-                type="checkbox"
-                checked={experimental.localReplicaEnabled}
-                onChange={(e) =>
-                  setExperimental({
-                    ...experimental,
-                    localReplicaEnabled: e.target.checked,
-                  })
-                }
-              />
-              <label htmlFor="localReplicaEnabled">
-                Enable local replica prototype
-                <div className="hint">
-                  Choose a local folder to compare against Overleaf. Browser-only,
-                  no background sync, no silent overwrites. Requires the File System
-                  Access API.
-                </div>
-              </label>
-            </div>
-
-            <div className="checkbox-row" style={{ marginTop: 14 }}>
-              <input
-                id="requireZipBackupBeforeWriteBack"
-                type="checkbox"
-                disabled={!experimental.overleafWriteBackEnabled}
-                checked={experimental.requireZipBackupBeforeWriteBack}
-                onChange={(e) =>
-                  setExperimental({
-                    ...experimental,
-                    requireZipBackupBeforeWriteBack: e.target.checked,
-                  })
-                }
-              />
-              <label htmlFor="requireZipBackupBeforeWriteBack">
-                Require ZIP backup before write-back
-                <div className="hint">
-                  Fetch a fresh ZIP snapshot before writing any change to Overleaf.
-                  Strongly recommended.
-                </div>
-              </label>
-            </div>
-
-            <div className="checkbox-row" style={{ marginTop: 14 }}>
-              <input
-                id="requireConfirmationBeforeWriteBack"
-                type="checkbox"
-                disabled={!experimental.overleafWriteBackEnabled}
-                checked={experimental.requireConfirmationBeforeWriteBack}
-                onChange={(e) =>
-                  setExperimental({
-                    ...experimental,
-                    requireConfirmationBeforeWriteBack: e.target.checked,
-                  })
-                }
-              />
-              <label htmlFor="requireConfirmationBeforeWriteBack">
-                Require confirmation before each write-back
-                <div className="hint">
-                  Show the changed file list and require explicit typed confirmation
-                  before any write. Strongly recommended.
-                </div>
-              </label>
-            </div>
-
-            <div className="checkbox-row" style={{ marginTop: 14 }}>
-              <input
-                id="allowBinaryWriteBack"
-                type="checkbox"
-                disabled={!experimental.overleafWriteBackEnabled}
-                checked={experimental.allowBinaryWriteBack}
-                onChange={(e) =>
-                  setExperimental({
-                    ...experimental,
-                    allowBinaryWriteBack: e.target.checked,
-                  })
-                }
-              />
-              <label htmlFor="allowBinaryWriteBack">
-                Allow binary file write-back
-                <div className="hint">
-                  Off by default. Write-back is generally limited to text source
-                  files. Binaries are riskier to overwrite.
-                </div>
-              </label>
-            </div>
-
-            <div className="field" style={{ marginTop: 18 }}>
-              <label htmlFor="writeBackExts">Allowed write-back extensions</label>
-              <textarea
-                id="writeBackExts"
-                value={extText}
-                disabled={!experimental.overleafWriteBackEnabled}
-                onChange={(e) => setExtText(e.target.value)}
-                spellCheck={false}
-                style={{ minHeight: 110 }}
-              />
-              <div className="hint">
-                One extension per line. Defaults: <code>.tex</code>, <code>.bib</code>,{' '}
-                <code>.cls</code>, <code>.sty</code>, <code>.bst</code>, <code>.md</code>,{' '}
-                <code>.txt</code>.
+            <div className="experimental-feature-card">
+              <h3 className="experimental-feature-heading">
+                Live read-only pull (Overleaf → GitHub)
+              </h3>
+              <div className="checkbox-row">
+                <input
+                  id="liveReadOnlyPullEnabled"
+                  type="checkbox"
+                  checked={experimental.liveReadOnlyPullEnabled}
+                  onChange={(e) =>
+                    setExperimental({
+                      ...experimental,
+                      liveReadOnlyPullEnabled: e.target.checked,
+                    })
+                  }
+                />
+                <label htmlFor="liveReadOnlyPullEnabled">
+                  Enable live read-only pull
+                  <div className="hint">
+                    Read every doc and file from Overleaf via the live
+                    session, then commit to GitHub. Slower than the ZIP
+                    route on large projects. Read-only — never modifies
+                    Overleaf. Independent of write-back below.
+                  </div>
+                </label>
               </div>
             </div>
 
-            {experimental.overleafWriteBackEnabled && (
-              <>
-                <WriteBackDevPanel experimental={experimental} />
-                <PullFromGitHubDevPanel
-                  links={links}
-                  experimental={experimental}
+            <div className="experimental-feature-card">
+              <h3 className="experimental-feature-heading">
+                Overleaf write-back (GitHub → Overleaf)
+              </h3>
+              <div className="checkbox-row">
+                <input
+                  id="overleafWriteBackEnabled"
+                  type="checkbox"
+                  checked={experimental.overleafWriteBackEnabled}
+                  onChange={(e) =>
+                    setExperimental({
+                      ...experimental,
+                      overleafWriteBackEnabled: e.target.checked,
+                    })
+                  }
                 />
-              </>
-            )}
+                <label htmlFor="overleafWriteBackEnabled">
+                  Enable Overleaf write-back
+                  <div className="hint">
+                    Powers <em>Pull from GitHub into Overleaf</em> in the
+                    popup plus the dev panels below. Each write runs the
+                    conflict detector + OT verify path. Independent of
+                    the live read-only pull toggle above.
+                  </div>
+                </label>
+              </div>
+
+              {experimental.overleafWriteBackEnabled && (
+                <>
+                  <div className="checkbox-row" style={{ marginTop: 14 }}>
+                    <input
+                      id="requireZipBackupBeforeWriteBack"
+                      type="checkbox"
+                      checked={experimental.requireZipBackupBeforeWriteBack}
+                      onChange={(e) =>
+                        setExperimental({
+                          ...experimental,
+                          requireZipBackupBeforeWriteBack: e.target.checked,
+                        })
+                      }
+                    />
+                    <label htmlFor="requireZipBackupBeforeWriteBack">
+                      Require ZIP backup before write-back
+                      <div className="hint">
+                        Fetch a fresh ZIP snapshot before writing any change to
+                        Overleaf. Strongly recommended.
+                      </div>
+                    </label>
+                  </div>
+
+                  <div className="checkbox-row" style={{ marginTop: 14 }}>
+                    <input
+                      id="requireConfirmationBeforeWriteBack"
+                      type="checkbox"
+                      checked={experimental.requireConfirmationBeforeWriteBack}
+                      onChange={(e) =>
+                        setExperimental({
+                          ...experimental,
+                          requireConfirmationBeforeWriteBack: e.target.checked,
+                        })
+                      }
+                    />
+                    <label htmlFor="requireConfirmationBeforeWriteBack">
+                      Require confirmation before each write-back
+                      <div className="hint">
+                        Show the changed file list and require explicit typed
+                        confirmation before any write. Strongly recommended.
+                      </div>
+                    </label>
+                  </div>
+
+                  <div className="checkbox-row" style={{ marginTop: 14 }}>
+                    <input
+                      id="allowBinaryWriteBack"
+                      type="checkbox"
+                      checked={experimental.allowBinaryWriteBack}
+                      onChange={(e) =>
+                        setExperimental({
+                          ...experimental,
+                          allowBinaryWriteBack: e.target.checked,
+                        })
+                      }
+                    />
+                    <label htmlFor="allowBinaryWriteBack">
+                      Allow binary file write-back
+                      <div className="hint">
+                        Off by default. Write-back is generally limited to text
+                        source files. Binaries are riskier to overwrite.
+                      </div>
+                    </label>
+                  </div>
+
+                  <div className="field" style={{ marginTop: 18 }}>
+                    <label htmlFor="writeBackExts">Allowed write-back extensions</label>
+                    <textarea
+                      id="writeBackExts"
+                      value={extText}
+                      onChange={(e) => setExtText(e.target.value)}
+                      spellCheck={false}
+                      style={{ minHeight: 110 }}
+                    />
+                    <div className="hint">
+                      One extension per line. Defaults: <code>.tex</code>,{' '}
+                      <code>.bib</code>, <code>.cls</code>, <code>.sty</code>,{' '}
+                      <code>.bst</code>, <code>.md</code>, <code>.txt</code>.
+                    </div>
+                  </div>
+
+                  <WriteBackDevPanel experimental={experimental} />
+                  <PullFromGitHubDevPanel
+                    links={links}
+                    experimental={experimental}
+                  />
+                </>
+              )}
+            </div>
+
+            <div className="experimental-feature-card">
+              <h3 className="experimental-feature-heading">
+                Local replica
+              </h3>
+              <div className="checkbox-row">
+                <input
+                  id="localReplicaEnabled"
+                  type="checkbox"
+                  checked={experimental.localReplicaEnabled}
+                  onChange={(e) =>
+                    setExperimental({
+                      ...experimental,
+                      localReplicaEnabled: e.target.checked,
+                    })
+                  }
+                />
+                <label htmlFor="localReplicaEnabled">
+                  Enable local replica prototype
+                  <div className="hint">
+                    Choose a local folder to compare against Overleaf.
+                    Browser-only, no background sync, no silent overwrites.
+                    Requires the File System Access API. Module-only — no
+                    popup UI in this build.
+                  </div>
+                </label>
+              </div>
+            </div>
+
           </div>
         )}
 

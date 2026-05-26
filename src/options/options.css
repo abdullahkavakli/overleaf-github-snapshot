@@ -549,6 +549,26 @@ code {
   border-left: 2px solid color-mix(in srgb, var(--warning-text), transparent 60%);
   animation: ofs-disclose 200ms ease-out;
   transform-origin: top left;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* One bordered card per experimental sub-feature so they read as
+   independently togglable features rather than a flat option list. */
+.experimental-feature-card {
+  margin-top: 0;
+  padding: 14px 16px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.experimental-feature-heading {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
 @keyframes ofs-disclose {
