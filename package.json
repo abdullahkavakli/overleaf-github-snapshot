@@ -1,7 +1,7 @@
 {
   "name": "overleaf-github-snapshot",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "description": "Chrome extension that commits Overleaf project snapshots to a GitHub repository, with optional live read-only sync.",
   "license": "AGPL-3.0-or-later",

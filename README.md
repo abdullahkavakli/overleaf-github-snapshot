@@ -6,11 +6,11 @@ A Chrome Extension (Manifest V3) that commits Overleaf project snapshots to a Gi
 
 Install from the Chrome Web Store: [Overleaf GitHub Snapshot](https://chromewebstore.google.com/detail/overleaf-github-snapshot/lghcgnlnondbifcmflgnlmlahhaolfmk)
 
-> **This extension does not provide guaranteed bidirectional Overleaf↔GitHub Git sync.** It creates GitHub commits from Overleaf source ZIP snapshots. An experimental live-sync section is gated behind opt-in settings and clearly labelled as such.
+> **The stable workflow is one-way: Overleaf → GitHub via ZIP snapshots.** Starting with `v1.1.0`, an experimental **GitHub → Overleaf pull** direction is also available — text writes via OT, doc creation, and binary uploads. It is gated behind opt-in flags, runs every write through a per-file conflict detector + ZIP-backup safety gate, and is still labelled clearly experimental: Overleaf's live protocol can change without notice, in which case the stable ZIP route remains the durable path.
 
 ## What this extension does
 
-It commits Overleaf project snapshots to GitHub.
+It commits Overleaf project snapshots to GitHub, and (as of `v1.1.0`, opt-in experimental) can pull GitHub changes back into Overleaf.
 
 The stable workflow is:
 
@@ -25,7 +25,7 @@ Open Overleaf project tab
 
 If the automatic ZIP route fails, you can fall back to **Manual ZIP upload**: download the source ZIP from Overleaf's **Menu → Source** and select it in the popup.
 
-There is also an opt-in **Experimental Overleaf Live Sync** section in the options page. It is disabled by default and clearly marked experimental.
+There is also an opt-in **Experimental Overleaf Live Sync** section in the options page. It is disabled by default and clearly marked experimental. Since `v1.1.0` this section also exposes the reverse direction — **Pull from GitHub into Overleaf** — which writes changed text docs back via Overleaf's OT protocol, creates new docs, and uploads new binaries.
 
 ### Per-project mappings
 
@@ -58,20 +58,51 @@ If you prefer the pre-1.0 behavior where the manual section is always visible, e
 
 ### C. Experimental — Overleaf Live Sync (off by default)
 
-The options page contains an **Experimental Overleaf Live Sync** section, fully disabled by default. Capabilities as of this release:
+The options page contains an **Experimental Overleaf Live Sync** section, fully disabled by default. As of `v1.1.0` the two halves (read direction and write direction) are independently toggleable — you can enable the GitHub → Overleaf pull without enabling the slower Overleaf → GitHub read.
 
-- **Live read-only pull** *(functional; protocol-dependent)* — pulls every doc and file in the project from Overleaf's live session, runs the same diff/commit pipeline as the ZIP route. **Architecture**: the popup messages the overleaf.com content script via `chrome.tabs.sendMessage`; the content script opens a Socket.IO 0.9 connection from the page origin (`www.overleaf.com`), runs `joinProject` to enumerate the file tree, `joinDoc` for each editable document, and `GET /project/<id>/file/<fileId>` for each static file. The session/CSRF flow uses the browser's existing Overleaf session via `credentials: "include"` and reads the CSRF token from the project page's `<meta name="ol-csrfToken">`. **The extension never reads `document.cookie` and never requests the `chrome.cookies` permission.** This depends on Overleaf's *internal, undocumented* real-time protocol — it can break without notice if Overleaf changes it, so the ZIP route remains the durable, recommended path. **Diagnostics:** live-sync diagnostic logging is **off by default** and, when explicitly opted in, emits only **structural frame shape** (string *lengths*, array/object structure, protocol field names, numeric versions) — **never document content**. Opt in by running `localStorage.setItem('ofs-live-debug','1')` in the Overleaf tab's DevTools console, then re-running the pull; clear it with `'0'`.
-- **Explicit Overleaf write-back** *(scaffolded — module-only, not yet wired to the live bridge)* — `writeSelectedFilesBackToOverleaf`, the conflict detector, OT helper, backup gate, and typed-confirmation contract are exported, but the function still imports the v0.3.x stub realtime client (`openProjectConnection`, `getActiveDocChannel`) which throws `protocol_unavailable`. Nothing in this build calls write-back, and even if you wired it, the call path would error out immediately. Wiring it to the v0.4 content-script bridge is a follow-on once live read-only has proven reliable.
+- **Live read-only pull (Overleaf → GitHub)** *(functional; protocol-dependent)* — pulls every doc and file in the project from Overleaf's live session, runs the same diff/commit pipeline as the ZIP route. **Architecture**: the popup messages the overleaf.com content script via `chrome.tabs.sendMessage`; the content script opens a Socket.IO 0.9 connection from the page origin (`www.overleaf.com`), runs `joinProject` to enumerate the file tree, `joinDoc` for each editable document, and `GET /project/<id>/file/<fileId>` for each static file. The session/CSRF flow uses the browser's existing Overleaf session via `credentials: "include"` and reads the CSRF token from the project page's `<meta name="ol-csrfToken">`. **The extension never reads `document.cookie` and never requests the `chrome.cookies` permission.** This depends on Overleaf's *internal, undocumented* real-time protocol — it can break without notice if Overleaf changes it, so the ZIP route remains the durable, recommended path. **Diagnostics:** live-sync diagnostic logging is **off by default** and, when explicitly opted in, emits only **structural frame shape** (string *lengths*, array/object structure, protocol field names, numeric versions) — **never document content**. Opt in by running `localStorage.setItem('ofs-live-debug','1')` in the Overleaf tab's DevTools console, then re-running the pull; clear it with `'0'`.
+- **Overleaf write-back (GitHub → Overleaf)** *(functional; protocol-dependent — added in `v1.1.0`)* — reads the linked GitHub branch and writes each changed text file back to Overleaf via the same Socket.IO bridge. Every write goes through a **conflict detector** (re-reads the current Overleaf doc immediately before write; refuses if the remote moved since the user's base snapshot), the **OT helper** (`diffToOps` produces a single delete+insert pair that's `applyOtUpdate`-shaped), then a **verify read** that confirms the post-write text byte-for-byte. A **ZIP backup gate** is on by default — write-back refuses to proceed if a fresh ZIP snapshot of the project can't be fetched, so you always have a known-good rollback point. **Optional create-mode** (off by default — separate checkbox in the popup): creates docs and parent folders for files present in GitHub but not in Overleaf, seeding initial content via `applyOtUpdate` from v0. **Binary uploads** are also opt-in via the existing `Allow binary file write-back` toggle: new files in GitHub get uploaded via the same multipart endpoint Overleaf's drag-drop UI uses; files that already exist in Overleaf are skipped (binary replace is not yet implemented). Failures are per-file and never abort the rest of the pull.
 - **Local replica prototype** *(module only — no UI)* — `localReplicaManager`, `localFolderAccess`, and the three-way `localConflictDetector` are implemented, but there is no UI that picks a folder, compares, or pulls. The File System Access API requirement is real for when the UI lands. See "Local replica prototype" below for the planned shape.
 
-Each experimental capability still has its own settings toggle, so future revisions can wire the UI without changing storage. Settings include:
+Each experimental capability has its own settings toggle. Settings include:
 
-- Require ZIP backup before write-back (default ON)
+- Enable live read-only pull (default OFF) — gates the *Overleaf → GitHub* direction
+- Enable Overleaf write-back (default OFF) — gates the *GitHub → Overleaf* direction
+- Require ZIP backup before write-back (default ON, **strongly recommended on**)
 - Require typed confirmation before write-back (default ON)
 - Allow binary file write-back (default OFF)
 - Allowed write-back extensions (default `.tex`, `.bib`, `.cls`, `.sty`, `.bst`, `.md`, `.txt`)
 
-> **Important.** Live read-only depends on Overleaf's internal Socket.IO 0.9 protocol staying compatible. The stable ZIP route is always available as a fallback. If live read-only returns a snapshot with fetch warnings, the popup blocks deletion-style commits until warnings clear, so partial fetches cannot silently remove files from your GitHub branch.
+The popup also exposes a **Popup display** preference: *Always show Manual ZIP upload* (default OFF; manual section is hidden until automatic fetch fails in the current popup session — see section B above).
+
+For development / validation the options page also exposes two **developer panels** when `overleafWriteBackEnabled` is on:
+- **Developer write-back test** — single-doc round-trip harness: pick a project + doc path, Read current, edit a textarea, Write back. Useful for proving the OT path against a specific doc without touching GitHub.
+- **Pull from GitHub into Overleaf** (dev variant) — same flow as the popup section but with a dropdown to pick *any* linked project, so you can test cross-project pulls.
+
+> **Important.** Live sync (both directions) depends on Overleaf's internal Socket.IO 0.9 protocol staying compatible. The stable ZIP route is always available as a fallback. If live read-only returns a snapshot with fetch warnings, the popup blocks deletion-style commits until warnings clear, so partial fetches cannot silently remove files from your GitHub branch. The write-back ZIP-backup gate plays the analogous safety role for the reverse direction.
+
+### D. Reverse mode — Pull from GitHub into Overleaf (opt-in, `v1.1.0`)
+
+When *Enable Overleaf write-back* is on, the popup grows a **Pull from GitHub into Overleaf** section (visible only when an Overleaf project tab is open — the bridge writes from the overleaf.com origin so the tab is mandatory). The flow:
+
+```
+Read GitHub HEAD of linked branch (parallel blob fetches, allowed-extensions pre-filter)
+   →  Resolve Overleaf doc / fileRef IDs via the live bridge
+   →  Per file:
+         text doc that exists in both    →  read current Overleaf, conflict-check
+                                            against the just-read base, write
+         text doc in GitHub only         →  if "Also create new files" is checked:
+                                            mkdir parent folders, POST /doc,
+                                            seed content via applyOtUpdate
+         binary in GitHub only           →  if "Also create new files" is checked
+                                            AND "Allow binary write-back" is on:
+                                            mkdir parents, POST /upload (multipart)
+         binary that exists in Overleaf  →  skip (replace-on-upload is a planned
+                                            follow-on; not in this build)
+   →  Display per-file results in three groups: write, create, binary upload
+```
+
+The summary banner counts each outcome explicitly: `N written · M skipped · K conflict · J failed · created · upload-skipped · …`. Every per-file failure surfaces with the raw HTTP / protocol response, so debugging wire-format issues against future Overleaf changes is straightforward.
 
 ## Local replica prototype (modules only — no UI yet)
 
@@ -125,45 +156,58 @@ extension/
 ├── vite.config.ts
 ├── src/
 │   ├── background/serviceWorker.ts
-│   ├── content/overleafContentScript.ts
+│   ├── content/
+│   │   ├── overleafContentScript.ts  Bridge dispatcher (LIVE_* messages)
+│   │   ├── liveBridgeHandler.ts      joinProject + joinDoc + applyOtUpdate +
+│   │   │                              folder/doc create + multipart upload
+│   │   └── socketIo09.ts             Hand-rolled Socket.IO 0.9 / Engine.IO 0.x
 │   ├── offscreen/                    Reserved for future Socket.IO keepalive
 │   │   ├── offscreen.html
 │   │   └── offscreen.ts
-│   ├── popup/                        Three-section popup (Stable / Fallback / Experimental)
-│   │   ├── popup.html
-│   │   ├── popup.tsx
+│   ├── popup/                        Sectioned popup (Stable / Fallback /
+│   │   ├── popup.html                experimental Live read-only /
+│   │   ├── popup.tsx                 experimental Pull from GitHub)
 │   │   ├── PopupApp.tsx
 │   │   └── popup.css
-│   ├── options/                      Repo config + experimental settings
-│   │   ├── options.html
+│   ├── options/                      Per-feature experimental cards + dev
+│   │   ├── options.html              panels (write-back test, pull dev)
 │   │   ├── options.tsx
 │   │   ├── OptionsApp.tsx
 │   │   └── options.css
 │   ├── github/
 │   │   ├── auth.ts
-│   │   ├── githubClient.ts
+│   │   ├── githubClient.ts           Adds getBlob in v1.1.0 for pull
 │   │   └── commitEngine.ts
 │   ├── overleaf/
 │   │   ├── overleafContext.ts        Active project-tab detection
 │   │   ├── overleafZipClient.ts      Automatic ZIP route, typed errors
 │   │   └── live/                     Experimental live sync (gated)
 │   │       ├── types.ts
-│   │       ├── liveSyncManager.ts
-│   │       ├── overleafRealtimeClient.ts
+│   │       ├── bridgeProtocol.ts     LIVE_* message types, OtOp re-export
+│   │       ├── bridgeClient.ts       Popup-side wrappers for every
+│   │       │                          LIVE_* message + auto-inject retry
+│   │       ├── liveSyncManager.ts    Read-only pull orchestrator +
+│   │       │                          sendBridgeRequest (auto-inject path)
+│   │       ├── overleafRealtimeClient.ts  BridgeDocChannel
 │   │       ├── overleafProjectLoader.ts
 │   │       ├── overleafDocumentClient.ts
 │   │       ├── overleafFileClient.ts
-│   │       ├── overleafOt.ts
-│   │       ├── overleafWriteBack.ts
+│   │       ├── overleafOt.ts         diffToOps (insert/delete clean-room)
+│   │       ├── overleafWriteBack.ts  writeSelectedFilesBackToOverleaf
+│   │       │                          (ZIP backup + conflict detect + verify)
 │   │       └── conflictDetector.ts
 │   ├── localReplica/                 Experimental local folder mirror
 │   │   ├── localReplicaTypes.ts
 │   │   ├── localReplicaManager.ts
 │   │   ├── localFolderAccess.ts
 │   │   └── localConflictDetector.ts
-│   ├── sources/                      Unified SourceSnapshot abstraction
+│   ├── sources/                      Source modes feeding the diff pipeline
 │   │   ├── sourceTypes.ts
-│   │   └── sourceManager.ts
+│   │   ├── sourceManager.ts          Manual ZIP + Overleaf-ZIP route
+│   │   ├── sourceFromGitHubBranch.ts GitHub branch -> ProjectFile[] (parallel
+│   │   │                              blob fetches, extension pre-filter)
+│   │   └── pullFromGitHubHelpers.ts  Create-missing-docs + upload-binaries
+│   │                                   helpers shared by popup + Options
 │   ├── zip/
 │   ├── diff/
 │   ├── storage/
@@ -261,30 +305,52 @@ Vite watches sources and rebuilds `dist/`. Reload the extension in `chrome://ext
 3. Use the **Manual ZIP upload** section to pick the ZIP.
 4. Review the diff and commit.
 
-### Experimental (live)
+### Experimental — Live read-only pull (Overleaf → GitHub)
 
-1. Open **Options** and enable **Experimental Overleaf Live Sync** plus the specific capabilities you want.
-2. In the popup, the **Experimental Live Sync** section becomes visible.
-3. With an Overleaf project tab open and signed in, click **Live read-only pull**. The popup messages the content script on that tab; the content script opens a Socket.IO 0.9 channel to Overleaf, runs `joinProject` + `joinDoc` for every text doc, fetches static files over REST, and returns a complete snapshot to the diff/commit pipeline. If any doc or file fails, the snapshot carries warnings and the popup blocks deletion-style commits as a safety net. If the Overleaf tab was opened before the extension was installed/updated, the popup auto-injects the content-script bridge into that tab on first use of live sync — no manual refresh needed (uses the `scripting` permission added in `v1.0.0`).
-4. **Write-back** and **local replica** are still **not user-runnable in this build**. The settings toggles persist for future revisions; the modules exist; but no popup or options UI calls them yet. Write-back will be wired only after live read-only has proven reliable.
+1. Open **Options** and enable the master **Experimental Overleaf Live Sync** plus **Enable live read-only pull (Overleaf → GitHub)**.
+2. In the popup, the **Live read-only pull** section becomes a separate card.
+3. With an Overleaf project tab open and signed in, click **Live read-only pull**. The popup messages the content script on that tab; the content script opens a Socket.IO 0.9 channel to Overleaf, runs `joinProject` + `joinDoc` for every text doc, fetches static files over REST, and returns a complete snapshot to the diff/commit pipeline. If any doc or file fails, the snapshot carries warnings and the popup blocks deletion-style commits as a safety net. If the Overleaf tab was opened before the extension was installed/updated, the popup auto-injects the content-script bridge into that tab on first use of any live-sync action — no manual refresh needed (uses the `scripting` permission added in `v1.0.0`).
+
+### Reverse — Pull from GitHub into Overleaf (`v1.1.0`)
+
+1. Open **Options** and enable the master **Experimental Overleaf Live Sync** plus **Enable Overleaf write-back (GitHub → Overleaf)**. Leave the safety toggles at their defaults (ZIP backup ON, allowed extensions list pre-filled).
+2. (Optional) Turn on **Allow binary file write-back** if you want figures / PDFs etc. uploaded too.
+3. In the popup, the **Pull from GitHub into Overleaf** card appears in the experimental section (only when an Overleaf project tab is open).
+4. (Optional, default OFF) Tick **Also create new files in Overleaf** to additionally create docs / upload binaries that don't exist in Overleaf yet.
+5. Click **Pull from GitHub into Overleaf** → confirm. The popup fetches the linked GitHub branch, reads matching Overleaf docs as the TOCTOU base, runs `writeSelectedFilesBackToOverleaf` for text + the create / upload paths for new files, and shows per-file results.
+6. **If the ZIP backup gate fails** (e.g. Overleaf returns a transient 500), the whole pull aborts before any write — this is intentional. Wait a minute and retry; do *not* leave the ZIP-backup toggle off as a workaround in real use.
+7. Per-file failures are surfaced with the raw response, so future protocol-change debugging is straightforward.
 
 ## Manual testing checklist
 
 User-runnable surfaces in this build:
 
+**Stable + read-direction:**
+
 1. **Non-Overleaf tab** → automatic button is hidden; manual ZIP still works.
 2. **Overleaf tab, signed in** → automatic ZIP route fetches, previews diff, commits.
 3. **Overleaf tab, signed out** → automatic route fails with `not_logged_in`; manual fallback remains visible.
 4. **ZIP endpoint changed** → typed `endpoint_changed`/`not_zip` error; manual fallback remains visible.
-5. **Experimental disabled** → no live sync UI visible.
-6. **Experimental enabled, Overleaf tab open and signed in** → live read-only pull connects via the content-script bridge, joinProject enumerates the tree, joinDoc reads every text document, REST fetches every static file, the popup shows the diff and commits to GitHub.
-7. **Experimental enabled, Overleaf tab opened before install/update** → first bridge ping fails internally; the extension auto-injects the content script via the `scripting` permission, retries the ping, and the pull succeeds without a manual tab refresh.
+5. **Experimental disabled** → no live sync UI visible in popup.
+6. **Live read-only pull enabled, Overleaf tab open and signed in** → live read-only pull connects via the content-script bridge, joinProject enumerates the tree, joinDoc reads every text document, REST fetches every static file, the popup shows the diff and commits to GitHub.
+7. **Live sync enabled, Overleaf tab opened before install/update** → first bridge ping fails internally; the extension auto-injects the content script via the `scripting` permission, retries the ping, and the call succeeds without a manual tab refresh. Applies to every live-bridge call, not just the read-only pull.
 8. **Live snapshot with fetch warnings** → deletion checkbox is disabled, deletions banner is suppressed, commit handler enforces `includeDeletions=false` as defense in depth.
 9. **Live read-only fails** → ZIP mode still works (use the green primary button instead).
 
-Not user-runnable yet (no UI in this build — modules exist but are not invoked):
+**Write direction — added in `v1.1.0`:**
 
-- **Write-back** — `writeSelectedFilesBackToOverleaf` exists with conflict detector, OT helper, backup gate, and typed-confirmation contract, but no UI calls it. Will be wired only after live read-only has proven reliable.
+10. **Overleaf write-back disabled** → no Pull-from-GitHub section visible.
+11. **Pull with no GitHub-side change** → all matching docs report `skipped — No local change versus base`. The conflict detector correctly short-circuits when GitHub HEAD == Overleaf content.
+12. **Pull with a single character changed in an existing `.tex`** → that one file reports `written`, the rest `skipped`. The `applyOtUpdate` delete+insert path at v>0 is exercised against the real document.
+13. **Pull with "Also create new files" on, brand-new `.tex` in GitHub not in Overleaf** → `created — path/file.tex: v1 (N bytes)` row appears; the new doc shows in Overleaf with seeded content. Parent folders are mkdir-ed on demand.
+14. **Pull with "Allow binary write-back" + "Also create new files" both on, new PNG in GitHub** → `uploaded — path/file.png: N bytes`. Existing binaries report `skipped — replace-on-upload not implemented`.
+15. **Pull with ZIP backup gate enabled and Overleaf returning 5xx on the ZIP endpoint** → the entire write-back aborts with `write_back_not_safe`. No Overleaf-side data is touched. This is intentional safety behaviour.
+16. **Developer write-back test (Options panel)** → single-doc round-trip: Read → edit textarea → Write back returns `written`, then Overleaf shows the change.
+
+Not user-runnable yet (modules exist but are not invoked):
+
+- **Replace-on-upload for binaries** — existing fileRefs are explicitly skipped to avoid a DELETE+POST behind the user's back. Slated for a future release.
+- **Deletions** — files in Overleaf with no GitHub source are not removed in either direction.
 - **Local replica** — `localReplicaManager` and its three-way conflict detector exist, but no folder picker or compare UI is wired up.
 
 These are slated for a future release.
