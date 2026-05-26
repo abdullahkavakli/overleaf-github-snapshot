@@ -449,15 +449,30 @@ chrome.runtime.onMessage.addListener(
       return true;
     }
     if (message.type === 'LIVE_UPLOAD_BINARY') {
-      const projectId = typeof message.projectId === 'string' ? message.projectId : '';
-      const path = typeof message.path === 'string' ? message.path : '';
+      const projectId = typeof message.projectId === 'string' ? message.projectId : null;
+      const path = typeof message.path === 'string' ? message.path : null;
       const contentBase64 =
-        typeof message.contentBase64 === 'string' ? message.contentBase64 : '';
-      if (!projectId || !path || !contentBase64) {
+        typeof message.contentBase64 === 'string' ? message.contentBase64 : null;
+      // Diagnostic: report exactly what's missing or non-string so callers
+      // can debug serialization issues. Empty-string contentBase64 is
+      // allowed (0-byte file uploads are legitimate; let Overleaf decide).
+      if (projectId === null || path === null || contentBase64 === null) {
+        const problems: string[] = [];
+        if (projectId === null) problems.push('projectId (missing or non-string)');
+        if (path === null) problems.push('path (missing or non-string)');
+        if (contentBase64 === null) problems.push('contentBase64 (missing or non-string)');
         sendResponse({
           ok: false,
           code: 'unknown',
-          message: 'projectId, path, and contentBase64 are required',
+          message: `LIVE_UPLOAD_BINARY rejected — ${problems.join(', ')}`,
+        });
+        return false;
+      }
+      if (!projectId || !path) {
+        sendResponse({
+          ok: false,
+          code: 'unknown',
+          message: `LIVE_UPLOAD_BINARY rejected — projectId or path is an empty string`,
         });
         return false;
       }
