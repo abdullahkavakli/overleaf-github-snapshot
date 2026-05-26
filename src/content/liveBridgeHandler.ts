@@ -965,6 +965,39 @@ function generateUuid(): string {
   });
 }
 
+function mimeForFilename(name: string): string {
+  const idx = name.lastIndexOf('.');
+  const ext = idx >= 0 ? name.substring(idx).toLowerCase() : '';
+  switch (ext) {
+    case '.png':
+      return 'image/png';
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.gif':
+      return 'image/gif';
+    case '.webp':
+      return 'image/webp';
+    case '.bmp':
+      return 'image/bmp';
+    case '.svg':
+      return 'image/svg+xml';
+    case '.tiff':
+    case '.tif':
+      return 'image/tiff';
+    case '.pdf':
+      return 'application/pdf';
+    case '.eps':
+      return 'application/postscript';
+    case '.zip':
+      return 'application/zip';
+    case '.csv':
+      return 'text/csv';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
 async function postOverleafMultipartUpload(
   projectId: string,
   parentFolderId: string,
@@ -978,7 +1011,11 @@ async function postOverleafMultipartUpload(
   // the caller's bytes may have been a view into.
   const fresh = new Uint8Array(bytes.byteLength);
   fresh.set(bytes);
-  const blob = new Blob([fresh.buffer], { type: 'application/octet-stream' });
+  // Type the blob with the actual MIME we can infer from the filename
+  // extension. Overleaf's upload validator does its own content sniffing
+  // either way, but sending a sensible Content-Type can't hurt and may
+  // satisfy strict-mode checks on newer builds.
+  const blob = new Blob([fresh.buffer], { type: mimeForFilename(filename) });
   const form = new FormData();
   form.append('qqfile', blob, filename);
   form.append('qqfilename', filename);
