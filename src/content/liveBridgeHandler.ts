@@ -950,21 +950,6 @@ export async function handleLiveCreateDocAtPath(
 //   Response JSON shape varies; we look for { entity_id } or { _id }.
 // ──────────────────────────────────────────────────────────────────────────
 
-function generateUuid(): string {
-  // crypto.randomUUID is widely available in content-script contexts now.
-  // Fallback included just to stay defensive on older Chromes.
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  // RFC4122-ish fallback; non-cryptographic but the server treats it as
-  // a deduplication token, not an identity.
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = Math.floor(Math.random() * 16);
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-}
-
 function mimeForFilename(name: string): string {
   const idx = name.lastIndexOf('.');
   const ext = idx >= 0 ? name.substring(idx).toLowerCase() : '';
@@ -1015,16 +1000,24 @@ async function postOverleafMultipartUpload(
   // extension. Overleaf's upload validator does its own content sniffing
   // either way, but sending a sensible Content-Type can't hurt and may
   // satisfy strict-mode checks on newer builds.
-  const blob = new Blob([fresh.buffer], { type: mimeForFilename(filename) });
+  const mimeType = mimeForFilename(filename);
+  const blob = new Blob([fresh.buffer], { type: mimeType });
   const form = new FormData();
+  // Field shape captured from current Overleaf's own upload UI. Earlier
+  // guesses (qqfilename / qquuid / qqtotalfilesize / folder_id) were
+  // wrong — the route's content sniffer rejected with "invalid_filename"
+  // until the field names matched what their drag-drop sends.
+  //   relativePath:   literal string "null" for a non-folder-tree upload
+  //   targetFolderId: parent folder _id (same value as URL ?folder_id=)
+  //   name:           leaf filename
+  //   type:           MIME type
+  //   qqfile:         the binary content blob (filename + Content-Type
+  //                   set automatically by FormData.append)
+  form.append('relativePath', 'null');
+  form.append('targetFolderId', parentFolderId);
+  form.append('name', filename);
+  form.append('type', mimeType);
   form.append('qqfile', blob, filename);
-  form.append('qqfilename', filename);
-  form.append('qquuid', generateUuid());
-  form.append('qqtotalfilesize', String(bytes.length));
-  // Belt-and-braces: also send folder_id in the form body. Some
-  // Overleaf builds read it from req.body rather than req.query, and
-  // sending both is harmless.
-  form.append('folder_id', parentFolderId);
 
   const url = `https://www.overleaf.com/project/${encodeURIComponent(
     projectId,
