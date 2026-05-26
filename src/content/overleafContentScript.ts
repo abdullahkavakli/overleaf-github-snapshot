@@ -368,6 +368,7 @@ type AnyBridgeMessage = {
   baseVersion?: unknown;
   path?: unknown;
   initialContent?: unknown;
+  contentBase64?: unknown;
 };
 
 chrome.runtime.onMessage.addListener(
@@ -436,6 +437,34 @@ chrome.runtime.onMessage.addListener(
         try {
           const mod = await import('./liveBridgeHandler');
           const result = await mod.handleLiveReadDoc(projectId, docId);
+          sendResponse(result);
+        } catch (e) {
+          sendResponse({
+            ok: false,
+            code: 'unknown',
+            message: e instanceof Error ? e.message : String(e),
+          });
+        }
+      })();
+      return true;
+    }
+    if (message.type === 'LIVE_UPLOAD_BINARY') {
+      const projectId = typeof message.projectId === 'string' ? message.projectId : '';
+      const path = typeof message.path === 'string' ? message.path : '';
+      const contentBase64 =
+        typeof message.contentBase64 === 'string' ? message.contentBase64 : '';
+      if (!projectId || !path || !contentBase64) {
+        sendResponse({
+          ok: false,
+          code: 'unknown',
+          message: 'projectId, path, and contentBase64 are required',
+        });
+        return false;
+      }
+      void (async () => {
+        try {
+          const mod = await import('./liveBridgeHandler');
+          const result = await mod.handleLiveUploadBinary(projectId, path, contentBase64);
           sendResponse(result);
         } catch (e) {
           sendResponse({

@@ -27,11 +27,12 @@ import type {
   LiveProjectMetadataResponseData,
   LiveReadDocResponseData,
   LiveSnapshotResponseData,
+  LiveUploadBinaryResponseData,
   LiveWriteDocResponseData,
   OtOp,
   SerializedProjectFile,
 } from '../overleaf/live/bridgeProtocol';
-import { uint8ToBase64 } from '../overleaf/live/bridgeProtocol';
+import { base64ToUint8, uint8ToBase64 } from '../overleaf/live/bridgeProtocol';
 import {
   COMMON_BINARY_EXTENSIONS,
   TEXT_EXTENSIONS,
@@ -919,6 +920,243 @@ export async function handleLiveCreateDocAtPath(
     return {
       ok: true,
       data: { docId: newDocId, path, version: verify.version, text: verify.text },
+    };
+  } finally {
+    client.disconnect();
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Phase-3: upload a binary file to a project-relative path. Walks the
+// path mkdir-style and POSTs the bytes via multipart to the upload
+// endpoint Overleaf uses for its drag-drop file uploader.
+//
+// First cut intentionally refuses to replace an existing file at the
+// same path — a separate replace path (PUT-style, or DELETE+POST) is
+// safer to add as its own slice once basic upload is validated. The
+// safety story is therefore the same as create-doc: failures leave
+// either no change (refused before any POST) or one extra fileRef in
+// Overleaf (POST succeeded but our local tracking didn't pick up the
+// new id), never destructive overwrite of existing content.
+//
+// Wire format guess (fineuploader convention used by Workshop):
+//   POST /project/:id/upload?folder_id=<parentFolderId>
+//   Headers: X-Csrf-Token
+//   Body: multipart/form-data with fields:
+//     qqfile          file blob
+//     qqfilename      filename string
+//     qquuid          client-generated UUID
+//     qqtotalfilesize byte count
+//   Response JSON shape varies; we look for { entity_id } or { _id }.
+// ──────────────────────────────────────────────────────────────────────────
+
+function generateUuid(): string {
+  // crypto.randomUUID is widely available in content-script contexts now.
+  // Fallback included just to stay defensive on older Chromes.
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  // RFC4122-ish fallback; non-cryptographic but the server treats it as
+  // a deduplication token, not an identity.
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = Math.floor(Math.random() * 16);
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+async function postOverleafMultipartUpload(
+  projectId: string,
+  parentFolderId: string,
+  filename: string,
+  bytes: Uint8Array,
+  csrfToken: string,
+): Promise<{ fileId: string }> {
+  // Copy into a fresh ArrayBuffer-backed Uint8Array so TS's strict
+  // SharedArrayBuffer-vs-ArrayBuffer split is satisfied for the Blob
+  // constructor. The .slice() also unanchors from any pooled buffer
+  // the caller's bytes may have been a view into.
+  const fresh = new Uint8Array(bytes.byteLength);
+  fresh.set(bytes);
+  const blob = new Blob([fresh.buffer], { type: 'application/octet-stream' });
+  const form = new FormData();
+  form.append('qqfile', blob, filename);
+  form.append('qqfilename', filename);
+  form.append('qquuid', generateUuid());
+  form.append('qqtotalfilesize', String(bytes.length));
+
+  const url = `https://www.overleaf.com/project/${encodeURIComponent(
+    projectId,
+  )}/upload?folder_id=${encodeURIComponent(parentFolderId)}`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      // Do NOT set Content-Type — the browser fills in the multipart
+      // boundary automatically when body is a FormData.
+      'X-Csrf-Token': csrfToken,
+    },
+    body: form,
+  });
+
+  if (!response.ok) {
+    let detail = '';
+    try {
+      detail = (await response.text()).slice(0, 200);
+    } catch {
+      // ignore
+    }
+    throw new Error(`HTTP ${response.status} ${url}${detail ? ` — ${detail}` : ''}`);
+  }
+
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch (e) {
+    throw new Error(`Upload response was not JSON: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  const obj = body as { entity_id?: string; _id?: string; success?: boolean };
+  const fileId = obj.entity_id ?? obj._id;
+  if (!fileId) {
+    throw new Error(`Upload response had no entity_id / _id: ${JSON.stringify(body).slice(0, 200)}`);
+  }
+  return { fileId };
+}
+
+export async function handleLiveUploadBinary(
+  projectId: string,
+  path: string,
+  contentBase64: string,
+): Promise<BridgeResponse<LiveUploadBinaryResponseData>> {
+  if (typeof path !== 'string' || path.length === 0) {
+    return failure('unknown', 'Empty path.');
+  }
+  if (path.startsWith('/') || path.includes('..') || path.endsWith('/')) {
+    return failure(
+      'unknown',
+      `Invalid path "${path}" — must be project-relative, no leading "/", no "..", no trailing "/".`,
+    );
+  }
+  const segments = path.split('/').filter((s) => s.length > 0);
+  if (segments.length === 0) {
+    return failure('unknown', 'Empty path.');
+  }
+  const filename = segments[segments.length - 1]!;
+  const folderSegments = segments.slice(0, -1);
+
+  let bytes: Uint8Array;
+  try {
+    bytes = base64ToUint8(contentBase64.replace(/\s+/g, ''));
+  } catch (e) {
+    return failure(
+      'unknown',
+      `Could not decode base64 payload: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+
+  const csrfToken = extractCsrfFromDocument();
+  if (!csrfToken) {
+    return failure(
+      'protocol_unavailable',
+      'CSRF token not found in the Overleaf project page.',
+      'Refresh the Overleaf tab and try again.',
+    );
+  }
+
+  // We still need joinProject to resolve the rootFolder tree even
+  // though the actual upload is REST. mkdir-folder walks share the
+  // same shape as create-doc above.
+  const session = await openProjectSession(projectId);
+  if (!session.ok) return session;
+  const { client, project, dbg } = session.data;
+
+  try {
+    const root = project.rootFolder?.[0];
+    if (!root || !root._id) {
+      return failure(
+        'project_join_failed',
+        'joinProject did not return a usable rootFolder._id.',
+      );
+    }
+
+    let currentFolderId: string = root._id;
+    let currentFolder: WorkshopFolder = root;
+
+    for (const segName of folderSegments) {
+      const existing = (currentFolder.folders ?? []).find((f) => f.name === segName);
+      if (existing && existing._id) {
+        dbg(`upload mkdir: existing folder "${segName}" id=${existing._id}`);
+        currentFolderId = existing._id;
+        currentFolder = existing;
+        continue;
+      }
+      dbg(`upload mkdir: creating folder "${segName}" under ${currentFolderId}`);
+      let created: { _id?: string };
+      try {
+        created = await postOverleafJson<{ _id?: string }>(
+          `https://www.overleaf.com/project/${encodeURIComponent(projectId)}/folder`,
+          { parent_folder_id: currentFolderId, name: segName },
+          csrfToken,
+        );
+      } catch (e) {
+        return failure(
+          'unknown',
+          `Folder creation failed for "${segName}": ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+      if (!created._id) {
+        return failure('unknown', `Folder creation returned no _id for "${segName}".`);
+      }
+      const newFolder: WorkshopFolder = {
+        _id: created._id,
+        name: segName,
+        folders: [],
+        docs: [],
+        fileRefs: [],
+      };
+      (currentFolder.folders ??= []).push(newFolder);
+      currentFolderId = created._id;
+      currentFolder = newFolder;
+    }
+
+    // Refuse to replace an existing fileRef or shadow a doc.
+    const existingDoc = (currentFolder.docs ?? []).find((d) => d.name === filename);
+    if (existingDoc) {
+      return failure(
+        'unknown',
+        `A doc already exists at "${path}". Refusing to upload a binary with the same name.`,
+      );
+    }
+    const existingFile = (currentFolder.fileRefs ?? []).find((f) => f.name === filename);
+    if (existingFile) {
+      return failure(
+        'unknown',
+        `A file already exists at "${path}". Replace-on-upload is not yet implemented; skipping.`,
+        'To replace, delete the existing file in Overleaf manually, then re-run the pull.',
+      );
+    }
+
+    dbg(`uploading binary "${filename}" (${bytes.length} bytes) to folder ${currentFolderId}`);
+    let uploaded: { fileId: string };
+    try {
+      uploaded = await postOverleafMultipartUpload(
+        projectId,
+        currentFolderId,
+        filename,
+        bytes,
+        csrfToken,
+      );
+    } catch (e) {
+      return failure(
+        'unknown',
+        `Binary upload failed for "${filename}": ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+
+    return {
+      ok: true,
+      data: { fileId: uploaded.fileId, path, sizeBytes: bytes.length },
     };
   } finally {
     client.disconnect();

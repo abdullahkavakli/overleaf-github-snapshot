@@ -72,7 +72,14 @@ export type SourceFromGitHubBranchOptions = {
   // extension allowlist. Files with extensions not in this list are
   // skipped before the blob fetch, saving one HTTP round-trip each.
   // When omitted, only the isLikelyText filter applies.
+  // Has no effect on binary files (those are gated by includeBinaries).
   allowedExtensions?: string[];
+  // When true, binary files (and unknown extensions) are also fetched
+  // and returned with encoding='base64', isBinary=true. Callers gate
+  // this on the user's allowBinaryWriteBack preference because uploads
+  // back to Overleaf go through a different endpoint (multipart upload,
+  // not OT) and only happen if the user explicitly opted in.
+  includeBinaries?: boolean;
   // Max parallel /git/blobs requests. Defaults to 6, chosen as a balance
   // between obvious speedup and staying well within GitHub's secondary
   // rate-limit guidance for authenticated users.
@@ -100,12 +107,13 @@ export async function sourceFromGitHubBranch(
   const allowedExts = options.allowedExtensions
     ? new Set(options.allowedExtensions)
     : null;
+  const includeBinaries = options.includeBinaries === true;
   const concurrency = Math.max(1, options.concurrency ?? DEFAULT_CONCURRENCY);
 
   // Pass 1: walk the tree and decide which blobs to fetch. Doing the
   // filtering up-front lets us batch the network calls cleanly and keeps
   // the skipped reasons consistent independent of fetch concurrency.
-  type Job = { projectPath: string; sha: string };
+  type Job = { projectPath: string; sha: string; treatAsText: boolean };
   const jobs: Job[] = [];
   const skipped: { path: string; reason: string }[] = [];
 
@@ -114,11 +122,19 @@ export async function sourceFromGitHubBranch(
     const projectPath = applyTargetDir(item.path, config.targetDir);
     if (projectPath === null) continue; // outside targetDir, ignored silently
 
-    if (!isLikelyText(projectPath)) {
-      skipped.push({
-        path: projectPath,
-        reason: 'binary or unknown file type — pull is text-only in this build',
-      });
+    const treatAsText = isLikelyText(projectPath);
+    if (!treatAsText) {
+      if (!includeBinaries) {
+        skipped.push({
+          path: projectPath,
+          reason: 'binary or unknown file type — text-only pull in this run',
+        });
+        continue;
+      }
+      // Binary path: include without the text-extension filter, since
+      // binaries are gated by the user's allowBinaryWriteBack preference
+      // at the call site rather than the allowedWriteBackExtensions list.
+      jobs.push({ projectPath, sha: item.sha, treatAsText: false });
       continue;
     }
     if (allowedExts && !allowedExts.has(getExtension(projectPath))) {
@@ -128,7 +144,7 @@ export async function sourceFromGitHubBranch(
       });
       continue;
     }
-    jobs.push({ projectPath, sha: item.sha });
+    jobs.push({ projectPath, sha: item.sha, treatAsText: true });
   }
 
   // Pass 2: fetch blobs in parallel batches of `concurrency`. We rely on
@@ -143,8 +159,19 @@ export async function sourceFromGitHubBranch(
         // GitHub returns base64 with 60-char line wrapping; modern atob
         // tolerates whitespace, but stripping is cheap insurance.
         const bytes = base64ToUint8(blob.content.replace(/\s+/g, ''));
-        const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
         const sha256 = await computeSha256(bytes);
+        if (!job.treatAsText) {
+          const file: ProjectFile = {
+            path: job.projectPath,
+            content: bytes,
+            encoding: 'base64',
+            sha256,
+            sizeBytes: bytes.byteLength,
+            isBinary: true,
+          };
+          return file;
+        }
+        const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
         const file: ProjectFile = {
           path: job.projectPath,
           content: bytes,

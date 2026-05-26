@@ -50,6 +50,8 @@ import {
 import { sourceFromGitHubBranch } from '../sources/sourceFromGitHubBranch';
 import {
   createMissingDocsForPull,
+  uploadBinariesForPull,
+  type BinaryResult,
   type CreateResult,
 } from '../sources/pullFromGitHubHelpers';
 import type { SourceMode, SourceSnapshot } from '../sources/sourceTypes';
@@ -972,6 +974,7 @@ function PullFromGitHubSection({
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<WriteBackResult[] | null>(null);
   const [createResults, setCreateResults] = useState<CreateResult[] | null>(null);
+  const [binaryResults, setBinaryResults] = useState<BinaryResult[] | null>(null);
   const [noOverleafDocs, setNoOverleafDocs] = useState<string[]>([]);
   const [sourceSkipped, setSourceSkipped] = useState<
     { path: string; reason: string }[]
@@ -985,6 +988,7 @@ function PullFromGitHubSection({
     setError(null);
     setResults(null);
     setCreateResults(null);
+    setBinaryResults(null);
     setNoOverleafDocs([]);
     setSourceSkipped([]);
     setCommitSha(null);
@@ -995,6 +999,7 @@ function PullFromGitHubSection({
     setError(null);
     setResults(null);
     setCreateResults(null);
+    setBinaryResults(null);
     setNoOverleafDocs([]);
     setSourceSkipped([]);
     setCommitSha(null);
@@ -1002,13 +1007,17 @@ function PullFromGitHubSection({
       setStep('Fetching GitHub branch…');
       const snapshot = await sourceFromGitHubBranch(token, repoConfig, {
         allowedExtensions: experimental.allowedWriteBackExtensions,
+        includeBinaries: experimental.allowBinaryWriteBack,
       });
       setCommitSha(snapshot.commitSha);
       setSourceSkipped(snapshot.skipped);
 
+      const textFiles = snapshot.files.filter((f) => !f.isBinary);
+      const binaryFiles = snapshot.files.filter((f) => f.isBinary);
+
       if (snapshot.files.length === 0) {
         setError(
-          `No pullable text files on ${repoConfig.branch}${repoConfig.targetDir ? ` under ${repoConfig.targetDir}/` : ''}.`,
+          `No pullable files on ${repoConfig.branch}${repoConfig.targetDir ? ` under ${repoConfig.targetDir}/` : ''}.`,
         );
         setMode('error');
         return;
@@ -1021,22 +1030,24 @@ function PullFromGitHubSection({
       }
       const overleafEntries = flattenProjectTree(md.data.rootFolder);
       const docIdByPath = new Map<string, string>();
+      const fileIdByPath = new Map<string, string>();
       for (const entry of overleafEntries) {
         if (entry.kind === 'doc' && entry.id) docIdByPath.set(entry.path, entry.id);
+        if (entry.kind === 'file' && entry.id) fileIdByPath.set(entry.path, entry.id);
       }
 
       const candidates: WriteBackCandidate[] = [];
       const toCreate: { path: string; content: string }[] = [];
       const enc = new TextEncoder();
       let i = 0;
-      for (const file of snapshot.files) {
+      for (const file of textFiles) {
         i++;
         const docId = docIdByPath.get(file.path);
         if (!docId) {
           toCreate.push({ path: file.path, content: file.text ?? '' });
           continue;
         }
-        setStep(`Reading ${i}/${snapshot.files.length}: ${file.path}`);
+        setStep(`Reading ${i}/${textFiles.length}: ${file.path}`);
         const read = await readDocViaBridge(projectId, docId);
         if (!read.ok) {
           candidates.push({
@@ -1057,7 +1068,11 @@ function PullFromGitHubSection({
       }
       setNoOverleafDocs(toCreate.map((c) => c.path));
 
-      if (candidates.length === 0 && !(createMissing && toCreate.length > 0)) {
+      const nothingToDo =
+        candidates.length === 0 &&
+        !(createMissing && toCreate.length > 0) &&
+        binaryFiles.length === 0;
+      if (nothingToDo) {
         setError(
           `No GitHub files have a matching Overleaf doc. ${toCreate.length} file(s) would need to be created — turn on "Also create new files" and re-run if you want them added.`,
         );
@@ -1082,8 +1097,9 @@ function PullFromGitHubSection({
         setResults(out);
       }
 
-      // Then create missing if opted in. Independent of write-back —
-      // a writeBack failure on file X doesn't block creating file Y.
+      // Then create missing text docs if opted in. Independent of
+      // write-back — a writeBack failure on file X doesn't block creating
+      // file Y.
       if (createMissing && toCreate.length > 0) {
         const created = await createMissingDocsForPull(
           projectId,
@@ -1092,6 +1108,22 @@ function PullFromGitHubSection({
           setStep,
         );
         setCreateResults(created);
+      }
+
+      // Binaries are gated separately by allowBinaryWriteBack at the
+      // source layer (they only enter snapshot.files when that's on).
+      // The createMissing checkbox doubles as the gate for actually
+      // uploading vs reporting them as skipped.
+      if (binaryFiles.length > 0) {
+        const existingFilePaths = new Set(fileIdByPath.keys());
+        const binOut = await uploadBinariesForPull(
+          projectId,
+          binaryFiles,
+          existingFilePaths,
+          createMissing,
+          setStep,
+        );
+        setBinaryResults(binOut);
       }
 
       setMode('done');
@@ -1104,7 +1136,7 @@ function PullFromGitHubSection({
   };
 
   const summary =
-    results || createResults
+    results || createResults || binaryResults
       ? {
           written: results?.filter((r) => r.status === 'written').length ?? 0,
           skipped: results?.filter((r) => r.status === 'skipped').length ?? 0,
@@ -1113,6 +1145,9 @@ function PullFromGitHubSection({
           created: createResults?.filter((r) => r.status === 'created').length ?? 0,
           createFailed: createResults?.filter((r) => r.status === 'failed').length ?? 0,
           createSkipped: createResults?.filter((r) => r.status === 'skipped').length ?? 0,
+          uploaded: binaryResults?.filter((r) => r.status === 'uploaded').length ?? 0,
+          uploadFailed: binaryResults?.filter((r) => r.status === 'failed').length ?? 0,
+          uploadSkipped: binaryResults?.filter((r) => r.status === 'skipped').length ?? 0,
         }
       : null;
 
@@ -1225,7 +1260,7 @@ function PullFromGitHubSection({
             </div>
           )}
           <div
-            className={`banner ${summary.failed + summary.conflict + summary.createFailed === 0 ? 'success' : 'warning'}`}
+            className={`banner ${summary.failed + summary.conflict + summary.createFailed + summary.uploadFailed === 0 ? 'success' : 'warning'}`}
             role="status"
             style={{ marginTop: 6, fontSize: 12 }}
           >
@@ -1237,6 +1272,15 @@ function PullFromGitHubSection({
                 {' · '}
                 {summary.created} created · {summary.createFailed} create-failed
                 {summary.createSkipped > 0 && <> · {summary.createSkipped} create-skipped</>}
+              </>
+            )}
+            {(summary.uploaded > 0 ||
+              summary.uploadFailed > 0 ||
+              summary.uploadSkipped > 0) && (
+              <>
+                {' · '}
+                {summary.uploaded} uploaded · {summary.uploadFailed} upload-failed
+                {summary.uploadSkipped > 0 && <> · {summary.uploadSkipped} upload-skipped</>}
               </>
             )}
             {noOverleafDocs.length > 0 && !createResults && (
@@ -1271,6 +1315,21 @@ function PullFromGitHubSection({
               </summary>
               <ul style={{ marginTop: 4, fontSize: 11.5, paddingLeft: 16 }}>
                 {createResults.map((r, i) => (
+                  <li key={i}>
+                    <strong>{r.status}</strong> — <code>{r.path}</code>
+                    {r.message ? `: ${r.message}` : ''}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+          {binaryResults && binaryResults.length > 0 && (
+            <details style={{ marginTop: 6 }}>
+              <summary style={{ cursor: 'pointer', fontSize: 11.5 }}>
+                Binary upload results ({binaryResults.length})
+              </summary>
+              <ul style={{ marginTop: 4, fontSize: 11.5, paddingLeft: 16 }}>
+                {binaryResults.map((r, i) => (
                   <li key={i}>
                     <strong>{r.status}</strong> — <code>{r.path}</code>
                     {r.message ? `: ${r.message}` : ''}

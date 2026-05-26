@@ -41,6 +41,8 @@ import { computeSha256 } from '../diff/fileHasher';
 import { sourceFromGitHubBranch } from '../sources/sourceFromGitHubBranch';
 import {
   createMissingDocsForPull,
+  uploadBinariesForPull,
+  type BinaryResult,
   type CreateResult,
 } from '../sources/pullFromGitHubHelpers';
 
@@ -1143,6 +1145,7 @@ function PullFromGitHubDevPanel({
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<WriteBackResult[] | null>(null);
   const [createResults, setCreateResults] = useState<CreateResult[] | null>(null);
+  const [binaryResults, setBinaryResults] = useState<BinaryResult[] | null>(null);
   const [noOverleafDocs, setNoOverleafDocs] = useState<string[]>([]);
   const [sourceSkipped, setSourceSkipped] = useState<
     { path: string; reason: string }[]
@@ -1154,6 +1157,7 @@ function PullFromGitHubDevPanel({
     setError(null);
     setResults(null);
     setCreateResults(null);
+    setBinaryResults(null);
     setNoOverleafDocs([]);
     setSourceSkipped([]);
     setCommitSha(null);
@@ -1171,18 +1175,22 @@ function PullFromGitHubDevPanel({
       setPhase('Fetching GitHub branch…');
       const snapshot = await sourceFromGitHubBranch(link.token, link.repo, {
         allowedExtensions: experimental.allowedWriteBackExtensions,
+        includeBinaries: experimental.allowBinaryWriteBack,
       });
       setCommitSha(snapshot.commitSha);
       setSourceSkipped(snapshot.skipped);
 
+      const textFiles = snapshot.files.filter((f) => !f.isBinary);
+      const binaryFiles = snapshot.files.filter((f) => f.isBinary);
+
       if (snapshot.files.length === 0) {
         setError(
-          `GitHub branch ${link.repo.branch} contains no pullable text files${link.repo.targetDir ? ` under ${link.repo.targetDir}/` : ''}.`,
+          `GitHub branch ${link.repo.branch} contains no pullable files${link.repo.targetDir ? ` under ${link.repo.targetDir}/` : ''}.`,
         );
         return;
       }
 
-      // 2. Resolve Overleaf doc IDs by path.
+      // 2. Resolve Overleaf doc and file IDs by path.
       setPhase('Resolving Overleaf docs…');
       const md = await fetchProjectMetadataViaBridge(selectedProjectId);
       if (!md.ok) {
@@ -1190,8 +1198,10 @@ function PullFromGitHubDevPanel({
       }
       const overleafEntries = flattenProjectTree(md.data.rootFolder);
       const docIdByPath = new Map<string, string>();
+      const fileIdByPath = new Map<string, string>();
       for (const entry of overleafEntries) {
         if (entry.kind === 'doc' && entry.id) docIdByPath.set(entry.path, entry.id);
+        if (entry.kind === 'file' && entry.id) fileIdByPath.set(entry.path, entry.id);
       }
 
       // 3. Build candidates: read current Overleaf per matching path,
@@ -1201,7 +1211,7 @@ function PullFromGitHubDevPanel({
       const toCreate: { path: string; content: string }[] = [];
       const enc = new TextEncoder();
       let i = 0;
-      for (const file of snapshot.files) {
+      for (const file of textFiles) {
         i++;
         const docId = docIdByPath.get(file.path);
         if (!docId) {
@@ -1209,7 +1219,7 @@ function PullFromGitHubDevPanel({
           continue;
         }
         setPhase(
-          `Reading ${i}/${snapshot.files.length} from Overleaf: ${file.path}…`,
+          `Reading ${i}/${textFiles.length} from Overleaf: ${file.path}…`,
         );
         const read = await readDocViaBridge(selectedProjectId, docId);
         if (!read.ok) {
@@ -1234,7 +1244,11 @@ function PullFromGitHubDevPanel({
       }
       setNoOverleafDocs(toCreate.map((c) => c.path));
 
-      if (candidates.length === 0 && !(createMissing && toCreate.length > 0)) {
+      const nothingToDo =
+        candidates.length === 0 &&
+        !(createMissing && toCreate.length > 0) &&
+        binaryFiles.length === 0;
+      if (nothingToDo) {
         setError(
           `None of the GitHub files have a matching doc in Overleaf. ${toCreate.length} file(s) would need to be created — turn on "Also create new files" to add them.`,
         );
@@ -1257,8 +1271,7 @@ function PullFromGitHubDevPanel({
         setResults(out);
       }
 
-      // 5. Create missing files if opted in. Independent of write-back —
-      //    a writeBack failure on file X doesn't block creating file Y.
+      // 5. Create missing text docs if opted in.
       if (createMissing && toCreate.length > 0) {
         const created = await createMissingDocsForPull(
           selectedProjectId,
@@ -1267,6 +1280,20 @@ function PullFromGitHubDevPanel({
           setPhase,
         );
         setCreateResults(created);
+      }
+
+      // 6. Upload binary files if any. createMissing doubles as the
+      //    "actually upload vs report-as-skipped" gate.
+      if (binaryFiles.length > 0) {
+        const existingFilePaths = new Set(fileIdByPath.keys());
+        const binOut = await uploadBinariesForPull(
+          selectedProjectId,
+          binaryFiles,
+          existingFilePaths,
+          createMissing,
+          setPhase,
+        );
+        setBinaryResults(binOut);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -1298,7 +1325,7 @@ function PullFromGitHubDevPanel({
   }
 
   const summary =
-    results || createResults
+    results || createResults || binaryResults
       ? {
           written: results?.filter((r) => r.status === 'written').length ?? 0,
           skipped: results?.filter((r) => r.status === 'skipped').length ?? 0,
@@ -1307,6 +1334,9 @@ function PullFromGitHubDevPanel({
           created: createResults?.filter((r) => r.status === 'created').length ?? 0,
           createFailed: createResults?.filter((r) => r.status === 'failed').length ?? 0,
           createSkipped: createResults?.filter((r) => r.status === 'skipped').length ?? 0,
+          uploaded: binaryResults?.filter((r) => r.status === 'uploaded').length ?? 0,
+          uploadFailed: binaryResults?.filter((r) => r.status === 'failed').length ?? 0,
+          uploadSkipped: binaryResults?.filter((r) => r.status === 'skipped').length ?? 0,
         }
       : null;
 
@@ -1403,7 +1433,7 @@ function PullFromGitHubDevPanel({
 
       {summary && (
         <div
-          className={`banner ${summary.failed + summary.conflict + summary.createFailed === 0 ? 'success' : 'info'}`}
+          className={`banner ${summary.failed + summary.conflict + summary.createFailed + summary.uploadFailed === 0 ? 'success' : 'info'}`}
           role="status"
           style={{ marginTop: 10 }}
         >
@@ -1414,6 +1444,14 @@ function PullFromGitHubDevPanel({
             <>
               , {summary.created} created, {summary.createFailed} create-failed
               {summary.createSkipped > 0 && <>, {summary.createSkipped} create-skipped</>}
+            </>
+          )}
+          {(summary.uploaded > 0 ||
+            summary.uploadFailed > 0 ||
+            summary.uploadSkipped > 0) && (
+            <>
+              , {summary.uploaded} uploaded, {summary.uploadFailed} upload-failed
+              {summary.uploadSkipped > 0 && <>, {summary.uploadSkipped} upload-skipped</>}
             </>
           )}
           {noOverleafDocs.length > 0 && !createResults && (
@@ -1472,6 +1510,31 @@ function PullFromGitHubDevPanel({
                     : 'info'
               }`}
               role={r.status === 'created' ? 'status' : 'alert'}
+              style={{ marginTop: 6, fontSize: 12 }}
+            >
+              <strong>{r.status}</strong> — <code>{r.path}</code>
+              {r.message ? `: ${r.message}` : ''}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {binaryResults && binaryResults.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
+            Binary upload results
+          </div>
+          {binaryResults.map((r, i) => (
+            <div
+              key={i}
+              className={`banner ${
+                r.status === 'uploaded'
+                  ? 'success'
+                  : r.status === 'failed'
+                    ? 'error'
+                    : 'info'
+              }`}
+              role={r.status === 'uploaded' ? 'status' : 'alert'}
               style={{ marginTop: 6, fontSize: 12 }}
             >
               <strong>{r.status}</strong> — <code>{r.path}</code>

@@ -14,6 +14,7 @@ import {
   type LiveCreateDocResponseData,
   type LiveProjectMetadataResponseData,
   type LiveReadDocResponseData,
+  type LiveUploadBinaryResponseData,
   type LiveWriteDocResponseData,
   type OtOp,
 } from './bridgeProtocol';
@@ -26,6 +27,10 @@ const WRITE_DOC_TIMEOUT_MS = 30_000;
 // Create-doc may need to mkdir several folders + create the doc + seed
 // content via OT, all in one bridge call. Budget extra time accordingly.
 const CREATE_DOC_TIMEOUT_MS = 45_000;
+// Binary upload includes mkdir + multipart POST of arbitrarily-large
+// files. Cap higher; the popup's user-visible failure mode is a typed
+// network timeout, not silent hang.
+const UPLOAD_BINARY_TIMEOUT_MS = 90_000;
 
 // Resolve the tab id for a project, throwing a typed error if no tab
 // matches. Centralised so write-back callers don't have to duplicate the
@@ -111,5 +116,24 @@ export async function createDocAtPathViaBridge(
       initialContent,
     },
     CREATE_DOC_TIMEOUT_MS,
+  );
+}
+
+export async function uploadBinaryViaBridge(
+  projectId: string,
+  path: string,
+  contentBase64: string,
+): Promise<BridgeResponse<LiveUploadBinaryResponseData>> {
+  const tabId = await resolveTabId(projectId);
+  return sendBridgeRequest<LiveUploadBinaryResponseData>(
+    tabId,
+    {
+      type: 'LIVE_UPLOAD_BINARY',
+      version: BRIDGE_VERSION,
+      projectId,
+      path,
+      contentBase64,
+    },
+    UPLOAD_BINARY_TIMEOUT_MS,
   );
 }

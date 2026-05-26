@@ -60,6 +60,20 @@ export type BridgeRequest =
       // Initial content for the new doc. Empty string is allowed and
       // skips the OT-seed step entirely.
       initialContent: string;
+    }
+  | {
+      type: 'LIVE_UPLOAD_BINARY';
+      version: typeof BRIDGE_VERSION;
+      projectId: string;
+      // Project-relative path. Folders along the path are mkdir-ed on
+      // demand. First cut refuses to replace an existing fileRef at the
+      // same path — a future slice can add explicit replace semantics.
+      path: string;
+      // Binary content, base64-encoded (chrome.tabs.sendMessage's
+      // structured-clone treats Uint8Array inconsistently across MV3
+      // builds; base64 over the wire is what the read snapshot already
+      // uses).
+      contentBase64: string;
     };
 
 export type SerializedProjectFile = {
@@ -124,6 +138,12 @@ export type LiveCreateDocResponseData = {
   path: string;
   version: number;
   text: string;
+};
+
+export type LiveUploadBinaryResponseData = {
+  fileId: string;
+  path: string;
+  sizeBytes: number;
 };
 
 export function uint8ToBase64(bytes: Uint8Array): string {
