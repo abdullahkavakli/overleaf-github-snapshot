@@ -126,25 +126,33 @@ function detectBinary(path: string, bytes: Uint8Array): boolean {
   return looksBinary(bytes);
 }
 
-// Overleaf's realtime channel is socket.io 0.9 carried on a WebSocket
-// *text* frame (see socketIo09.ts: the handler takes `ev.data` only when
-// it is already a string). The browser decodes that frame's UTF-8 payload
-// into a proper JS string before JSON.parse ever sees it, so doc lines
-// reach us as real code points — nothing is latin1-packed.
+// Overleaf's real-time server packs every joinDoc line before sending it
+// (services/real-time WebsocketController.joinDoc: `encodeForWebsockets =
+// text => unescape(encodeURIComponent(text))`), so each code unit carries
+// one UTF-8 byte. That is an application-level encoding on top of the
+// WebSocket frame, so the browser's frame decode does not undo it.
+// Only applyOtUpdate ops travel unpacked, so writes need no matching encode.
 //
-// Overleaf Workshop's `decodePackedUtf8` exists because it reads raw Node
-// Buffers off the wire, where each code unit genuinely is one byte.
-// Applying that unpack to an already-decoded browser string corrupts every
-// non-ASCII character: `charCodeAt(i) & 0xff` truncates U+0131 "ı" to 0x31
-// "1" and U+0130 "İ" to 0x30 "0", while a lone high byte such as 0xFC "ü"
-// becomes invalid UTF-8 and decodes to U+FFFD. Files containing accented
-// text then hash differently from their GitHub blobs and show up as
-// spurious "modified" entries in the diff — and would be committed as
-// mojibake.
+// The server skips packing for `history-ot` docs, but only for clients that
+// send `supportsHistoryOT`; we don't, so it refuses those docs instead.
 //
-// In the browser the correct decode is the identity.
-function decodeDocLine(line: string): string {
-  return line;
+// Strict on purpose: a code unit above 0xFF or invalid UTF-8 means the
+// premise no longer holds, and failing the read is safer than writing
+// mojibake back to Overleaf or GitHub.
+function decodePackedUtf8(line: string): string {
+  const bytes = new Uint8Array(line.length);
+  for (let i = 0; i < line.length; i++) {
+    const unit = line.charCodeAt(i);
+    if (unit > 0xff) {
+      throw new Error('joinDoc line is not latin1-packed UTF-8 (Overleaf protocol changed?)');
+    }
+    bytes[i] = unit;
+  }
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error('joinDoc line is not valid packed UTF-8 (Overleaf protocol changed?)');
+  }
 }
 
 async function buildTextProjectFile(
@@ -304,7 +312,7 @@ async function joinDoc(
   if (typeof versionRaw !== 'number') {
     throw new Error(`joinDoc ack: version missing or not a number`);
   }
-  const lines = linesRaw.map((l) => (typeof l === 'string' ? decodeDocLine(l) : ''));
+  const lines = linesRaw.map((l) => (typeof l === 'string' ? decodePackedUtf8(l) : ''));
   const text = lines.join('\n');
   return { text, version: versionRaw };
 }
