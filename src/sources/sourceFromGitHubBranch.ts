@@ -171,7 +171,9 @@ export async function sourceFromGitHubBranch(
           };
           return file;
         }
-        const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+        // ignoreBOM: a leading BOM stays in the text, as it does in the
+        // Overleaf doc, so the pull neither strips it nor sees a change.
+        const text = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true }).decode(bytes);
         const file: ProjectFile = {
           path: job.projectPath,
           content: bytes,

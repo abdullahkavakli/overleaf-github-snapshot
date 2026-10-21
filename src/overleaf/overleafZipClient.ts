@@ -224,9 +224,15 @@ async function attemptFetch(url: string): Promise<RawAttempt> {
   return { url: finalUrl, bytes };
 }
 
-export async function fetchOverleafZipSnapshot(
-  projectId: string,
-): Promise<OverleafZipSnapshot> {
+// The project's export, downloaded and checked to carry a ZIP signature
+// (with a single nested ZIP unwrapped), but not parsed.
+export type OverleafZipDownload = {
+  bytes: Uint8Array;
+  fetchedFromUrl: string;
+  zipSizeBytes: number;
+};
+
+export async function downloadOverleafZip(projectId: string): Promise<OverleafZipDownload> {
   if (!projectId || !/^[a-zA-Z0-9]+$/.test(projectId)) {
     throw new OverleafZipFetchError(
       'unknown',
@@ -268,15 +274,22 @@ export async function fetchOverleafZipSnapshot(
   }
 
   const unwrapped = await maybeUnwrapSingleNestedZip(attempt.bytes);
+  return { bytes: unwrapped, fetchedFromUrl: attempt.url, zipSizeBytes: unwrapped.byteLength };
+}
+
+export async function fetchOverleafZipSnapshot(
+  projectId: string,
+): Promise<OverleafZipSnapshot> {
+  const download = await downloadOverleafZip(projectId);
 
   let files: ProjectFile[];
   try {
-    files = await readZipFromBytes(unwrapped);
+    files = await readZipFromBytes(download.bytes);
   } catch (e) {
     throw new OverleafZipFetchError(
       'zip_parse_failed',
       `Failed to parse Overleaf ZIP: ${e instanceof Error ? e.message : String(e)}`,
-      { url: attempt.url },
+      { url: download.fetchedFromUrl },
     );
   }
 
@@ -284,8 +297,8 @@ export async function fetchOverleafZipSnapshot(
     projectId,
     files,
     source: 'overleaf-zip-route',
-    fetchedFromUrl: attempt.url,
-    zipSizeBytes: unwrapped.byteLength,
+    fetchedFromUrl: download.fetchedFromUrl,
+    zipSizeBytes: download.zipSizeBytes,
   };
 }
 

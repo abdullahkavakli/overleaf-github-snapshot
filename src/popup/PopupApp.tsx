@@ -49,26 +49,18 @@ import {
 } from '../sources/sourceManager';
 import { sourceFromGitHubBranch } from '../sources/sourceFromGitHubBranch';
 import {
-  createMissingDocsForPull,
-  uploadBinariesForPull,
+  pullSnapshotIntoOverleaf,
+  recoveryForPullError,
   type BinaryResult,
   type CreateResult,
 } from '../sources/pullFromGitHubHelpers';
 import type { SourceMode, SourceSnapshot } from '../sources/sourceTypes';
 import { fetchOverleafLiveSnapshot } from '../overleaf/live/liveSyncManager';
 import {
-  fetchProjectMetadataViaBridge,
-  readDocViaBridge,
-} from '../overleaf/live/bridgeClient';
-import { flattenProjectTree } from '../overleaf/live/overleafProjectLoader';
-import { writeSelectedFilesBackToOverleaf } from '../overleaf/live/overleafWriteBack';
-import {
   LiveSyncError,
   recoveryActionForLiveSyncError,
-  type WriteBackCandidate,
   type WriteBackResult,
 } from '../overleaf/live/types';
-import { computeSha256 } from '../diff/fileHasher';
 
 type Phase =
   | { kind: 'loading' }
@@ -972,6 +964,7 @@ function PullFromGitHubSection({
   const [mode, setMode] = useState<Mode>('idle');
   const [step, setStep] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
+  const [errorRecovery, setErrorRecovery] = useState<string | null>(null);
   const [results, setResults] = useState<WriteBackResult[] | null>(null);
   const [createResults, setCreateResults] = useState<CreateResult[] | null>(null);
   const [binaryResults, setBinaryResults] = useState<BinaryResult[] | null>(null);
@@ -986,6 +979,7 @@ function PullFromGitHubSection({
     setMode('idle');
     setStep('');
     setError(null);
+    setErrorRecovery(null);
     setResults(null);
     setCreateResults(null);
     setBinaryResults(null);
@@ -997,6 +991,7 @@ function PullFromGitHubSection({
   const pull = async () => {
     setMode('pulling');
     setError(null);
+    setErrorRecovery(null);
     setResults(null);
     setCreateResults(null);
     setBinaryResults(null);
@@ -1012,9 +1007,6 @@ function PullFromGitHubSection({
       setCommitSha(snapshot.commitSha);
       setSourceSkipped(snapshot.skipped);
 
-      const textFiles = snapshot.files.filter((f) => !f.isBinary);
-      const binaryFiles = snapshot.files.filter((f) => f.isBinary);
-
       if (snapshot.files.length === 0) {
         setError(
           `No pullable files on ${repoConfig.branch}${repoConfig.targetDir ? ` under ${repoConfig.targetDir}/` : ''}.`,
@@ -1023,112 +1015,31 @@ function PullFromGitHubSection({
         return;
       }
 
-      setStep('Resolving Overleaf docs…');
-      const md = await fetchProjectMetadataViaBridge(projectId);
-      if (!md.ok) {
-        throw new Error(`Overleaf metadata: ${md.message}`);
-      }
-      const overleafEntries = flattenProjectTree(md.data.rootFolder);
-      const docIdByPath = new Map<string, string>();
-      const fileIdByPath = new Map<string, string>();
-      for (const entry of overleafEntries) {
-        if (entry.kind === 'doc' && entry.id) docIdByPath.set(entry.path, entry.id);
-        if (entry.kind === 'file' && entry.id) fileIdByPath.set(entry.path, entry.id);
-      }
-
-      const candidates: WriteBackCandidate[] = [];
-      const toCreate: { path: string; content: string }[] = [];
-      const enc = new TextEncoder();
-      let i = 0;
-      for (const file of textFiles) {
-        i++;
-        const docId = docIdByPath.get(file.path);
-        if (!docId) {
-          toCreate.push({ path: file.path, content: file.text ?? '' });
-          continue;
-        }
-        setStep(`Reading ${i}/${textFiles.length}: ${file.path}`);
-        const read = await readDocViaBridge(projectId, docId);
-        if (!read.ok) {
-          candidates.push({
-            path: file.path,
-            oldText: '',
-            newText: file.text ?? '',
-            baseSha256: '',
-          });
-          continue;
-        }
-        const baseSha256 = await computeSha256(enc.encode(read.data.text));
-        candidates.push({
-          path: file.path,
-          oldText: read.data.text,
-          newText: file.text ?? '',
-          baseSha256,
-        });
-      }
-      setNoOverleafDocs(toCreate.map((c) => c.path));
-
-      const nothingToDo =
-        candidates.length === 0 &&
-        !(createMissing && toCreate.length > 0) &&
-        binaryFiles.length === 0;
-      if (nothingToDo) {
+      // One Overleaf session for the whole pull; per-file failures still
+      // produce result rows rather than aborting.
+      const outcome = await pullSnapshotIntoOverleaf({
+        projectId,
+        files: snapshot.files,
+        experimental,
+        createMissing,
+        onProgress: setStep,
+        onMissingInOverleaf: setNoOverleafDocs,
+      });
+      if (outcome.kind === 'nothing-to-do') {
         setError(
-          `No GitHub files have a matching Overleaf doc. ${toCreate.length} file(s) would need to be created — turn on "Also create new files" and re-run if you want them added.`,
+          `No GitHub files have a matching Overleaf doc. ${outcome.toCreateCount} file(s) would need to be created — turn on "Also create new files" and re-run if you want them added.`,
         );
         setMode('error');
         return;
       }
-
-      // Write existing matches first; per-file failures still produce
-      // result rows rather than aborting.
-      if (candidates.length > 0) {
-        setStep(`Writing ${candidates.length} file(s) to Overleaf…`);
-        const out = await writeSelectedFilesBackToOverleaf(
-          projectId,
-          candidates,
-          {
-            requireZipBackup: experimental.requireZipBackupBeforeWriteBack,
-            requireConfirmation: false,
-            allowedExtensions: experimental.allowedWriteBackExtensions,
-            allowBinary: experimental.allowBinaryWriteBack,
-          },
-        );
-        setResults(out);
-      }
-
-      // Then create missing text docs if opted in. Independent of
-      // write-back — a writeBack failure on file X doesn't block creating
-      // file Y.
-      if (createMissing && toCreate.length > 0) {
-        const created = await createMissingDocsForPull(
-          projectId,
-          toCreate,
-          experimental.allowedWriteBackExtensions,
-          setStep,
-        );
-        setCreateResults(created);
-      }
-
-      // Binaries are gated separately by allowBinaryWriteBack at the
-      // source layer (they only enter snapshot.files when that's on).
-      // The createMissing checkbox doubles as the gate for actually
-      // uploading vs reporting them as skipped.
-      if (binaryFiles.length > 0) {
-        const existingFilePaths = new Set(fileIdByPath.keys());
-        const binOut = await uploadBinariesForPull(
-          projectId,
-          binaryFiles,
-          existingFilePaths,
-          createMissing,
-          setStep,
-        );
-        setBinaryResults(binOut);
-      }
+      setResults(outcome.results);
+      setCreateResults(outcome.createResults);
+      setBinaryResults(outcome.binaryResults);
 
       setMode('done');
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      if (e instanceof LiveSyncError) setErrorRecovery(recoveryForPullError(e));
       setMode('error');
     } finally {
       setStep('');
@@ -1240,6 +1151,11 @@ function PullFromGitHubSection({
         <>
           <div className="banner error" role="alert" style={{ marginTop: 8 }}>
             {error}
+            {errorRecovery && (
+              <div className="muted" style={{ marginTop: 6 }}>
+                Recovery: {errorRecovery}
+              </div>
+            )}
           </div>
           <button
             className="button full"

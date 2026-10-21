@@ -141,7 +141,7 @@ export async function createCommit(
         path: d.path,
         mode: '100644',
         type: 'blob',
-        content: file.text ?? new TextDecoder('utf-8').decode(file.content),
+        content: file.text ?? new TextDecoder('utf-8', { ignoreBOM: true }).decode(file.content),
       });
     }
   }

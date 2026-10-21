@@ -36,12 +36,12 @@ import {
 } from '../overleaf/live/bridgeClient';
 import { flattenProjectTree } from '../overleaf/live/overleafProjectLoader';
 import { writeSelectedFilesBackToOverleaf } from '../overleaf/live/overleafWriteBack';
-import type { WriteBackCandidate, WriteBackResult } from '../overleaf/live/types';
+import { LiveSyncError, type WriteBackResult } from '../overleaf/live/types';
 import { computeSha256 } from '../diff/fileHasher';
 import { sourceFromGitHubBranch } from '../sources/sourceFromGitHubBranch';
 import {
-  createMissingDocsForPull,
-  uploadBinariesForPull,
+  pullSnapshotIntoOverleaf,
+  recoveryForPullError,
   type BinaryResult,
   type CreateResult,
 } from '../sources/pullFromGitHubHelpers';
@@ -1117,11 +1117,11 @@ function WriteBackDevPanel({
 //
 //   GitHub tree (text blobs only, filtered to allowedExtensions later
 //                in writeSelectedFilesBackToOverleaf)
-//     -> resolve doc IDs via the live bridge
-//     -> per-file: read current Overleaf as baseText (the popup's
-//        re-read defends against TOCTOU between read and write)
-//     -> writeSelectedFilesBackToOverleaf (ZIP backup if enabled,
-//        conflict detector, OT diff, applyOtUpdate, verify-after-write)
+//     -> pullSnapshotIntoOverleaf, on one Overleaf bridge session:
+//        resolve doc IDs, ZIP backup if enabled, read current Overleaf
+//        as baseText, then writeSelectedFilesBackToOverleaf (fresh
+//        re-read, conflict detector, OT diff, applyOtUpdate,
+//        verify-after-write)
 //
 // First-cut scope:
 //   - Text files only.
@@ -1143,6 +1143,7 @@ function PullFromGitHubDevPanel({
   const [busy, setBusy] = useState<'idle' | 'pulling'>('idle');
   const [phase, setPhase] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
+  const [errorRecovery, setErrorRecovery] = useState<string | null>(null);
   const [results, setResults] = useState<WriteBackResult[] | null>(null);
   const [createResults, setCreateResults] = useState<CreateResult[] | null>(null);
   const [binaryResults, setBinaryResults] = useState<BinaryResult[] | null>(null);
@@ -1155,6 +1156,7 @@ function PullFromGitHubDevPanel({
 
   const onPull = async () => {
     setError(null);
+    setErrorRecovery(null);
     setResults(null);
     setCreateResults(null);
     setBinaryResults(null);
@@ -1180,9 +1182,6 @@ function PullFromGitHubDevPanel({
       setCommitSha(snapshot.commitSha);
       setSourceSkipped(snapshot.skipped);
 
-      const textFiles = snapshot.files.filter((f) => !f.isBinary);
-      const binaryFiles = snapshot.files.filter((f) => f.isBinary);
-
       if (snapshot.files.length === 0) {
         setError(
           `GitHub branch ${link.repo.branch} contains no pullable files${link.repo.targetDir ? ` under ${link.repo.targetDir}/` : ''}.`,
@@ -1190,113 +1189,30 @@ function PullFromGitHubDevPanel({
         return;
       }
 
-      // 2. Resolve Overleaf doc and file IDs by path.
-      setPhase('Resolving Overleaf docs…');
-      const md = await fetchProjectMetadataViaBridge(selectedProjectId);
-      if (!md.ok) {
-        throw new Error(`Overleaf metadata: ${md.message}`);
-      }
-      const overleafEntries = flattenProjectTree(md.data.rootFolder);
-      const docIdByPath = new Map<string, string>();
-      const fileIdByPath = new Map<string, string>();
-      for (const entry of overleafEntries) {
-        if (entry.kind === 'doc' && entry.id) docIdByPath.set(entry.path, entry.id);
-        if (entry.kind === 'file' && entry.id) fileIdByPath.set(entry.path, entry.id);
-      }
-
-      // 3. Build candidates: read current Overleaf per matching path,
-      //    use that as baseText so the in-pipeline TOCTOU conflict check
-      //    has something meaningful to compare.
-      const candidates: WriteBackCandidate[] = [];
-      const toCreate: { path: string; content: string }[] = [];
-      const enc = new TextEncoder();
-      let i = 0;
-      for (const file of textFiles) {
-        i++;
-        const docId = docIdByPath.get(file.path);
-        if (!docId) {
-          toCreate.push({ path: file.path, content: file.text ?? '' });
-          continue;
-        }
-        setPhase(
-          `Reading ${i}/${textFiles.length} from Overleaf: ${file.path}…`,
-        );
-        const read = await readDocViaBridge(selectedProjectId, docId);
-        if (!read.ok) {
-          // Surface as a failed result so the user can see the path that
-          // tripped, rather than aborting the whole pull.
-          candidates.push({
-            path: file.path,
-            oldText: '',
-            newText: file.text ?? '',
-            baseSha256: '',
-          });
-          continue;
-        }
-        const baseText = read.data.text;
-        const baseSha256 = await computeSha256(enc.encode(baseText));
-        candidates.push({
-          path: file.path,
-          oldText: baseText,
-          newText: file.text ?? '',
-          baseSha256,
-        });
-      }
-      setNoOverleafDocs(toCreate.map((c) => c.path));
-
-      const nothingToDo =
-        candidates.length === 0 &&
-        !(createMissing && toCreate.length > 0) &&
-        binaryFiles.length === 0;
-      if (nothingToDo) {
+      // 2–6. Same pipeline as the popup, on one Overleaf session: resolve
+      //      IDs, ZIP backup, read, write with the existing safety gates,
+      //      then create missing docs and upload new binaries if opted in.
+      const outcome = await pullSnapshotIntoOverleaf({
+        projectId: selectedProjectId,
+        files: snapshot.files,
+        experimental,
+        createMissing,
+        onProgress: setPhase,
+        onMissingInOverleaf: setNoOverleafDocs,
+      });
+      if (outcome.kind === 'nothing-to-do') {
         setError(
-          `None of the GitHub files have a matching doc in Overleaf. ${toCreate.length} file(s) would need to be created — turn on "Also create new files" to add them.`,
+          `None of the GitHub files have a matching doc in Overleaf. ${outcome.toCreateCount} file(s) would need to be created — turn on "Also create new files" to add them.`,
         );
         return;
       }
-
-      // 4. Run write-back orchestration with the existing safety gates.
-      if (candidates.length > 0) {
-        setPhase(`Writing ${candidates.length} file(s) back to Overleaf…`);
-        const out = await writeSelectedFilesBackToOverleaf(
-          selectedProjectId,
-          candidates,
-          {
-            requireZipBackup: experimental.requireZipBackupBeforeWriteBack,
-            requireConfirmation: false,
-            allowedExtensions: experimental.allowedWriteBackExtensions,
-            allowBinary: experimental.allowBinaryWriteBack,
-          },
-        );
-        setResults(out);
-      }
-
-      // 5. Create missing text docs if opted in.
-      if (createMissing && toCreate.length > 0) {
-        const created = await createMissingDocsForPull(
-          selectedProjectId,
-          toCreate,
-          experimental.allowedWriteBackExtensions,
-          setPhase,
-        );
-        setCreateResults(created);
-      }
-
-      // 6. Upload binary files if any. createMissing doubles as the
-      //    "actually upload vs report-as-skipped" gate.
-      if (binaryFiles.length > 0) {
-        const existingFilePaths = new Set(fileIdByPath.keys());
-        const binOut = await uploadBinariesForPull(
-          selectedProjectId,
-          binaryFiles,
-          existingFilePaths,
-          createMissing,
-          setPhase,
-        );
-        setBinaryResults(binOut);
-      }
+      setResults(outcome.results);
+      setCreateResults(outcome.createResults);
+      setBinaryResults(outcome.binaryResults);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      // Same hint as the popup shows.
+      if (e instanceof LiveSyncError) setErrorRecovery(recoveryForPullError(e));
     } finally {
       setBusy('idle');
       setPhase('');
@@ -1422,6 +1338,7 @@ function PullFromGitHubDevPanel({
       {error && (
         <div className="banner error" role="alert" style={{ marginTop: 10 }}>
           {error}
+          {errorRecovery && <div style={{ marginTop: 6 }}>Recovery: {errorRecovery}</div>}
         </div>
       )}
 

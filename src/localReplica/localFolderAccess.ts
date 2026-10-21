@@ -103,7 +103,7 @@ export async function readLocalFolderAsProjectFiles(
           isBinary: true,
         });
       } else {
-        const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+        const text = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true }).decode(bytes);
         files.push({
           path,
           content: bytes,

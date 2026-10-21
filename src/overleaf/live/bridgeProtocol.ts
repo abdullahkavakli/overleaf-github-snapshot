@@ -20,6 +20,13 @@ export type { OtOp };
 
 export const BRIDGE_VERSION = 1 as const;
 
+// Feature flag a content script advertises in its LIVE_PING reply when it
+// understands the LIVE_SESSION_* messages below. A tab opened before an
+// extension update keeps running the old content script (the double-init
+// guard turns re-injection into a no-op), so callers check this flag
+// before relying on sessions.
+export const BRIDGE_FEATURE_SESSIONS = 'project-session-v1';
+
 export type BridgeRequest =
   | {
       type: 'LIVE_PING';
@@ -74,7 +81,62 @@ export type BridgeRequest =
       // builds; base64 over the wire is what the read snapshot already
       // uses).
       contentBase64: string;
+    }
+  // Project sessions: one socket + one joinProject in the content script,
+  // shared by every operation of a pull. LIVE_SESSION_OPEN returns the
+  // session ID and the project tree; the other messages name the session.
+  // Each operation keeps the safety steps of its one-shot counterpart above.
+  | {
+      type: 'LIVE_SESSION_OPEN';
+      version: typeof BRIDGE_VERSION;
+      projectId: string;
+    }
+  | {
+      type: 'LIVE_SESSION_READ_DOCS';
+      version: typeof BRIDGE_VERSION;
+      projectId: string;
+      sessionId: string;
+      // Distinct doc IDs. The content script joins a few at a time on the
+      // session socket and reports success or failure per doc.
+      docIds: string[];
+    }
+  | {
+      type: 'LIVE_SESSION_WRITE_DOC';
+      version: typeof BRIDGE_VERSION;
+      projectId: string;
+      sessionId: string;
+      docId: string;
+      ops: OtOp[];
+      baseVersion: number;
+    }
+  | {
+      type: 'LIVE_SESSION_CREATE_DOC';
+      version: typeof BRIDGE_VERSION;
+      projectId: string;
+      sessionId: string;
+      path: string;
+      initialContent: string;
+    }
+  | {
+      type: 'LIVE_SESSION_UPLOAD_BINARY';
+      version: typeof BRIDGE_VERSION;
+      projectId: string;
+      sessionId: string;
+      path: string;
+      contentBase64: string;
+    }
+  | {
+      type: 'LIVE_SESSION_CLOSE';
+      version: typeof BRIDGE_VERSION;
+      projectId: string;
+      sessionId: string;
     };
+
+export type LivePingResponseData = {
+  onProjectPage: boolean;
+  // Absent on content scripts that predate BRIDGE_FEATURE_SESSIONS.
+  features?: string[];
+};
 
 export type SerializedProjectFile = {
   path: string;
@@ -144,6 +206,24 @@ export type LiveUploadBinaryResponseData = {
   fileId: string;
   path: string;
   sizeBytes: number;
+};
+
+export type LiveSessionOpenResponseData = {
+  sessionId: string;
+  rootFolder: LiveProjectFolder[];
+  name?: string;
+};
+
+export type LiveSessionDocRead =
+  | { docId: string; ok: true; version: number; text: string }
+  | { docId: string; ok: false; code: LiveSyncErrorCode; message: string };
+
+export type LiveSessionReadDocsResponseData = {
+  docs: LiveSessionDocRead[];
+};
+
+export type LiveSessionCloseResponseData = {
+  closed: boolean;
 };
 
 export function uint8ToBase64(bytes: Uint8Array): string {

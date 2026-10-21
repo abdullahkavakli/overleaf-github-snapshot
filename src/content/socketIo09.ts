@@ -48,8 +48,20 @@ export type SocketIo09Listener = (event: SocketIo09Event) => void;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 const DEFAULT_CONNECT_ACK_TIMEOUT_MS = 10_000;
 
+// Why an emitWithAck failed: the server answered with an error, the socket
+// closed (or was never open) before an answer came, or no answer came in
+// time. Only 'server-error' means the server looked at the request and
+// refused it.
+export type SocketIo09FailureKind = 'server-error' | 'transport' | 'timeout' | 'other';
+
 export class SocketIo09Error extends Error {
-  constructor(public stage: string, message: string) {
+  constructor(
+    public stage: string,
+    message: string,
+    readonly kind: SocketIo09FailureKind = 'other',
+    // The err argument of the ack, for kind 'server-error'.
+    readonly serverError?: unknown,
+  ) {
     super(`[${stage}] ${message}`);
     this.name = 'SocketIo09Error';
   }
@@ -163,8 +175,12 @@ export class SocketIo09Client {
     return () => this.listeners.delete(listener);
   }
 
-  onDisconnect(handler: (reason: string) => void): void {
+  // Returns an unsubscribe function, like `on`.
+  onDisconnect(handler: (reason: string) => void): () => void {
     this.disconnectHandlers.push(handler);
+    return () => {
+      this.disconnectHandlers = this.disconnectHandlers.filter((h) => h !== handler);
+    };
   }
 
   isOpen(): boolean {
@@ -224,7 +240,7 @@ export class SocketIo09Client {
     timeoutMs = 10_000,
   ): Promise<T> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new SocketIo09Error('emit', 'socket is not open'));
+      return Promise.reject(new SocketIo09Error('emit', 'socket is not open', 'transport'));
     }
     const ackId = this.nextAckId++;
     const payload = JSON.stringify({ name, args });
@@ -233,7 +249,11 @@ export class SocketIo09Client {
       const timer = setTimeout(() => {
         this.pendingAcks.delete(ackId);
         reject(
-          new SocketIo09Error('emitWithAck', `no ack for "${name}" within ${timeoutMs}ms`),
+          new SocketIo09Error(
+            'emitWithAck',
+            `no ack for "${name}" within ${timeoutMs}ms`,
+            'timeout',
+          ),
         );
       }, timeoutMs);
       this.pendingAcks.set(ackId, (responseArgs) => {
@@ -251,10 +271,16 @@ export class SocketIo09Client {
           } catch {
             detail = String(err);
           }
+          // failAllPendingAcks synthesizes { socketIo09Error } when the
+          // socket closes; that is a lost connection, not a server answer.
+          const synthesized =
+            typeof err === 'object' && Object.prototype.hasOwnProperty.call(err, 'socketIo09Error');
           reject(
             new SocketIo09Error(
               'emitWithAck',
               `server returned error for "${name}": ${detail}`,
+              synthesized ? 'transport' : 'server-error',
+              synthesized ? undefined : err,
             ),
           );
           return;
@@ -267,7 +293,13 @@ export class SocketIo09Client {
       } catch (e) {
         clearTimeout(timer);
         this.pendingAcks.delete(ackId);
-        reject(new SocketIo09Error('emitWithAck', e instanceof Error ? e.message : String(e)));
+        reject(
+          new SocketIo09Error(
+            'emitWithAck',
+            e instanceof Error ? e.message : String(e),
+            'transport',
+          ),
+        );
       }
     });
   }

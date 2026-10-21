@@ -11,6 +11,11 @@
 //   - Scrape private Overleaf APIs.
 //   - Touch Overleaf credentials, cookies, or DOM beyond our injected button.
 
+import {
+  BRIDGE_FEATURE_SESSIONS,
+  type LivePingResponseData,
+} from '../overleaf/live/bridgeProtocol';
+
 const BUTTON_ID = 'overleaf-snapshot-launcher';
 const TOOLTIP_ID = 'overleaf-snapshot-tooltip';
 const STYLE_ID = 'overleaf-snapshot-style';
@@ -375,8 +380,29 @@ chrome.runtime.onMessage.addListener(
   (message: AnyBridgeMessage, _sender, sendResponse) => {
     if (!message || typeof message !== 'object') return false;
     if (message.type === 'LIVE_PING') {
-      sendResponse({ ok: true, data: { onProjectPage: !!projectIdFromUrl() } });
+      const data: LivePingResponseData = {
+        onProjectPage: !!projectIdFromUrl(),
+        features: [BRIDGE_FEATURE_SESSIONS],
+      };
+      sendResponse({ ok: true, data });
       return false;
+    }
+    if (typeof message.type === 'string' && message.type.startsWith('LIVE_SESSION_')) {
+      // Project-session messages (see liveBridgeHandler.ts). The handler
+      // validates every field itself.
+      void (async () => {
+        try {
+          const mod = await import('./liveBridgeHandler');
+          sendResponse(await mod.handleLiveSessionMessage(message));
+        } catch (e) {
+          sendResponse({
+            ok: false,
+            code: 'unknown',
+            message: e instanceof Error ? e.message : String(e),
+          });
+        }
+      })();
+      return true;
     }
     if (message.type === 'LIVE_FETCH_SNAPSHOT') {
       const projectId = typeof message.projectId === 'string' ? message.projectId : '';

@@ -22,6 +22,22 @@ export type LiveSyncErrorCode =
   | 'not_logged_in'
   | 'forbidden'
   | 'network'
+  // The Overleaf tab runs a content script from before the bridge learned
+  // project sessions (re-injection is a no-op there), so it cannot serve
+  // LIVE_SESSION_* messages until the tab is reloaded.
+  | 'bridge_outdated'
+  // A LIVE_SESSION_* message named a session the content script no longer
+  // holds (tab reloaded, or the session idled out).
+  | 'bridge_session_lost'
+  // A create-only operation found a doc or file already at the target path
+  // in Overleaf, so it changed nothing.
+  | 'already_exists'
+  // Another pull (or Options write-back test) into the same project is
+  // still running in this browser (projectPullLock.ts).
+  | 'project_busy'
+  // The operation was never sent: an earlier one in the same run lost the
+  // connection to the Overleaf tab (bridgeSession.ts).
+  | 'not_attempted'
   | 'unknown';
 
 export class LiveSyncError extends Error {
@@ -62,6 +78,16 @@ export function recoveryActionForLiveSyncError(code: LiveSyncErrorCode): string 
       return 'Your account may not have access to this project.';
     case 'network':
       return 'Check your network and try again.';
+    case 'bridge_outdated':
+      return 'Reload the Overleaf tab so the updated extension script loads, then try again.';
+    case 'bridge_session_lost':
+      return 'Run the pull again; if it keeps happening, reload the Overleaf tab.';
+    case 'already_exists':
+      return 'Nothing was replaced. To use the GitHub version, delete or rename the file in Overleaf, then run the pull again.';
+    case 'project_busy':
+      return 'Wait for the other pull to finish, then try again. If you closed the window that was running it, try again in two minutes.';
+    case 'not_attempted':
+      return 'Run the pull again.';
     default:
       return 'Use the ZIP snapshot route as a fallback.';
   }

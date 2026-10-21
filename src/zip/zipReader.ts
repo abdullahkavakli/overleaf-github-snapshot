@@ -10,8 +10,16 @@ import {
 import { computeSha256 } from '../diff/fileHasher';
 import { normalizeZipPaths } from './normalizeZipPaths';
 
+// 'empty': a valid archive with no files in it. 'over_limit': a valid
+// archive beyond MAX_FILES / MAX_FILE_SIZE_BYTES / MAX_PROJECT_SIZE_BYTES.
+// 'unreadable': anything else (not a ZIP, corrupt, undecodable).
+export type ZipErrorKind = 'unreadable' | 'empty' | 'over_limit';
+
 export class ZipError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly kind: ZipErrorKind = 'unreadable',
+  ) {
     super(message);
     this.name = 'ZipError';
   }
@@ -52,8 +60,10 @@ function detectBinary(path: string, bytes: Uint8Array): boolean {
   return looksBinary(bytes);
 }
 
+// ignoreBOM: a leading BOM stays in the text, matching the bytes (and the
+// Overleaf doc), so commits and comparisons keep it.
 function bytesToText(bytes: Uint8Array): string {
-  return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  return new TextDecoder('utf-8', { fatal: false, ignoreBOM: true }).decode(bytes);
 }
 
 export async function readZipFromFile(file: File): Promise<ProjectFile[]> {
@@ -72,15 +82,16 @@ export async function readZipFromBytes(bytes: Uint8Array): Promise<ProjectFile[]
 
   const rawFiles = decodeZipOrThrow(bytes);
   if (Object.keys(rawFiles).length === 0) {
-    throw new ZipError('ZIP contains no files.');
+    throw new ZipError('ZIP contains no files.', 'empty');
   }
 
   const normalized = normalizeZipPaths(rawFiles);
   if (normalized.size === 0) {
-    throw new ZipError('ZIP contains no usable files after normalization.');
+    // Only directory entries.
+    throw new ZipError('ZIP contains no usable files after normalization.', 'empty');
   }
   if (normalized.size > MAX_FILES) {
-    throw new ZipError(`ZIP contains too many files (${normalized.size} > ${MAX_FILES}).`);
+    throw new ZipError(`ZIP contains too many files (${normalized.size} > ${MAX_FILES}).`, 'over_limit');
   }
 
   let totalSize = 0;
@@ -92,12 +103,14 @@ export async function readZipFromBytes(bytes: Uint8Array): Promise<ProjectFile[]
         `File "${path}" is ${formatBytes(content.byteLength)} which exceeds the ${formatBytes(
           MAX_FILE_SIZE_BYTES,
         )} per-file limit.`,
+        'over_limit',
       );
     }
     totalSize += content.byteLength;
     if (totalSize > MAX_PROJECT_SIZE_BYTES) {
       throw new ZipError(
         `Project exceeds the ${formatBytes(MAX_PROJECT_SIZE_BYTES)} total size limit.`,
+        'over_limit',
       );
     }
 
