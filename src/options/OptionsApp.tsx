@@ -265,7 +265,6 @@ export function Options(): React.ReactElement {
 
   return (
     <div className="container">
-      <PinHint />
       <header className="page-header">
         <h1>Overleaf GitHub Snapshot</h1>
         <p className="lead">
@@ -656,51 +655,6 @@ export function Options(): React.ReactElement {
           Reset all settings
         </button>
       </div>
-    </div>
-  );
-}
-
-// Suggests pinning the toolbar icon, only while Chrome reports it unpinned.
-// chrome.action.getUserSettings needs Chrome 91+; without it we say nothing.
-// Pinning happens in browser UI that fires no page event, so re-check
-// whenever the page regains focus or becomes visible.
-function PinHint(): React.ReactElement | null {
-  const [unpinned, setUnpinned] = useState<boolean>(false);
-
-  useEffect(() => {
-    if (typeof chrome.action?.getUserSettings !== 'function') return;
-    let cancelled = false;
-    const check = () => {
-      try {
-        Promise.resolve(chrome.action.getUserSettings()).then(
-          (settings) => {
-            if (!cancelled) setUnpinned(settings?.isOnToolbar === false);
-          },
-          () => {},
-        );
-      } catch {
-        // Treat a throwing API like a missing one: no hint.
-      }
-    };
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') check();
-    };
-    check();
-    window.addEventListener('focus', check);
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => {
-      cancelled = true;
-      window.removeEventListener('focus', check);
-      document.removeEventListener('visibilitychange', onVisibility);
-    };
-  }, []);
-
-  if (!unpinned) return null;
-  return (
-    <div className="banner info" role="note" style={{ marginBottom: 20 }}>
-      <strong>Tip:</strong> pin Overleaf GitHub Snapshot to your toolbar so
-      it's one click away. Click the puzzle-piece icon next to the address bar,
-      then the pin next to Overleaf GitHub Snapshot.
     </div>
   );
 }
