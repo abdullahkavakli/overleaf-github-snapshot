@@ -6,7 +6,13 @@
 
 import { unzipSync } from 'fflate';
 import type { ProjectFile } from '../shared/types';
-import { readZipFromBytes } from '../zip/zipReader';
+import {
+  MAX_FILES,
+  MAX_FILE_SIZE_BYTES,
+  MAX_PROJECT_SIZE_BYTES,
+} from '../shared/constants';
+import { ZipError, readZipFromBytes } from '../zip/zipReader';
+import { asDetail } from './live/types';
 
 export type OverleafZipSnapshot = {
   projectId: string;
@@ -24,6 +30,11 @@ export type OverleafZipFetchErrorCode =
   | 'not_zip'
   | 'network'
   | 'zip_parse_failed'
+  // A valid archive with no files in it (ZipError 'empty').
+  | 'project_empty'
+  // A valid archive beyond the ZIP reader's limits (ZipError 'over_limit').
+  // A manual ZIP of the same project hits the same limits.
+  | 'project_too_large'
   | 'unknown';
 
 export class OverleafZipFetchError extends Error {
@@ -140,7 +151,7 @@ async function attemptFetch(url: string): Promise<RawAttempt> {
   } catch (e) {
     throw new OverleafZipFetchError(
       'network',
-      `Network error fetching Overleaf ZIP: ${e instanceof Error ? e.message : String(e)}`,
+      e instanceof Error ? e.message : String(e),
       { url },
     );
   }
@@ -164,14 +175,14 @@ async function attemptFetch(url: string): Promise<RawAttempt> {
   if (response.status === 404) {
     throw new OverleafZipFetchError(
       'not_found',
-      'Overleaf ZIP endpoint returned 404 for this project.',
+      'Overleaf answered HTTP 404 for this project\'s ZIP.',
       { status: response.status, url: finalUrl },
     );
   }
   if (!response.ok) {
     throw new OverleafZipFetchError(
       'unknown',
-      `Overleaf ZIP request failed: HTTP ${response.status}.`,
+      `Overleaf answered HTTP ${response.status} instead of sending the project ZIP.`,
       { status: response.status, url: finalUrl },
     );
   }
@@ -183,7 +194,7 @@ async function attemptFetch(url: string): Promise<RawAttempt> {
   } catch (e) {
     throw new OverleafZipFetchError(
       'network',
-      `Failed to read Overleaf ZIP body: ${e instanceof Error ? e.message : String(e)}`,
+      `The download stopped before it finished: ${e instanceof Error ? e.message : String(e)}`,
       { status: response.status, url: finalUrl },
     );
   }
@@ -192,7 +203,7 @@ async function attemptFetch(url: string): Promise<RawAttempt> {
   if (bytes.length === 0) {
     throw new OverleafZipFetchError(
       'endpoint_changed',
-      'Overleaf returned an empty response where a ZIP was expected.',
+      'Overleaf sent an empty response instead of the project ZIP.',
       { status: response.status, url: finalUrl },
     );
   }
@@ -208,7 +219,7 @@ async function attemptFetch(url: string): Promise<RawAttempt> {
     }
     throw new OverleafZipFetchError(
       'endpoint_changed',
-      'Overleaf returned HTML where a ZIP was expected — the export endpoint may have changed.',
+      'Overleaf sent a web page instead of the project ZIP.',
       { status: response.status, url: finalUrl },
     );
   }
@@ -216,7 +227,7 @@ async function attemptFetch(url: string): Promise<RawAttempt> {
   if (!looksLikeZip(bytes)) {
     throw new OverleafZipFetchError(
       'not_zip',
-      'Overleaf response did not contain a valid ZIP signature.',
+      'The file Overleaf sent is not a ZIP.',
       { status: response.status, url: finalUrl },
     );
   }
@@ -286,11 +297,15 @@ export async function fetchOverleafZipSnapshot(
   try {
     files = await readZipFromBytes(download.bytes);
   } catch (e) {
-    throw new OverleafZipFetchError(
-      'zip_parse_failed',
-      `Failed to parse Overleaf ZIP: ${e instanceof Error ? e.message : String(e)}`,
-      { url: download.fetchedFromUrl },
-    );
+    const code =
+      e instanceof ZipError && e.kind === 'over_limit'
+        ? 'project_too_large'
+        : e instanceof ZipError && e.kind === 'empty'
+          ? 'project_empty'
+          : 'zip_parse_failed';
+    throw new OverleafZipFetchError(code, e instanceof Error ? e.message : String(e), {
+      url: download.fetchedFromUrl,
+    });
   }
 
   return {
@@ -302,27 +317,82 @@ export async function fetchOverleafZipSnapshot(
   };
 }
 
-export function formatOverleafZipFetchError(error: unknown): string {
+// What went wrong, what to do about it (null when there is nothing
+// specific to say) and the raw cause after "Details:" (empty when it adds
+// nothing). The pull's ZIP check shows the advice on its own line.
+export function describeOverleafZipFetchError(error: unknown): {
+  summary: string;
+  advice: string | null;
+  details: string;
+} {
   if (error instanceof OverleafZipFetchError) {
+    const details = `Details: ${asDetail(error.message)}.`;
     switch (error.code) {
       case 'not_logged_in':
-        return 'You are not signed in to Overleaf in this browser. Open Overleaf, sign in, then try again.';
+        return {
+          summary: 'You are not signed in to Overleaf in this browser.',
+          advice: 'Open Overleaf, sign in, then try again.',
+          details: '',
+        };
       case 'forbidden':
-        return 'Overleaf refused the ZIP download — your account may not have access to this project.';
+        return {
+          summary: 'Overleaf refused the ZIP download — your account may not have access to this project.',
+          advice: null,
+          details: '',
+        };
       case 'not_found':
-        return 'Overleaf could not find this project to export.';
+        return { summary: 'Overleaf could not find this project to export.', advice: null, details: '' };
       case 'endpoint_changed':
-        return 'Overleaf returned an unexpected response — the export endpoint may have changed.';
+        return {
+          summary: "Overleaf didn't send the project ZIP.",
+          advice: "Check that you're signed in and can open the project, then try again.",
+          details,
+        };
       case 'not_zip':
-        return 'Overleaf returned something that does not look like a ZIP.';
+        return { summary: "Overleaf didn't send a valid project ZIP.", advice: 'Try again in a minute.', details };
       case 'network':
-        return `Network error contacting Overleaf: ${error.message}`;
+        return { summary: "Couldn't reach Overleaf.", advice: 'Check your connection and try again.', details };
       case 'zip_parse_failed':
-        return `The Overleaf ZIP could not be parsed: ${error.message}`;
+        return { summary: "Overleaf's project ZIP couldn't be opened.", advice: null, details };
+      case 'project_empty':
+        return {
+          summary: "Overleaf's export of this project has no files in it, so there is nothing to commit.",
+          advice: null,
+          details: '',
+        };
+      case 'project_too_large':
+        return {
+          summary: `This project is too large to snapshot (limits: ${MAX_FILES.toLocaleString('en-US')} files, ${MAX_FILE_SIZE_BYTES / (1024 * 1024)} MB per file, ${MAX_PROJECT_SIZE_BYTES / (1024 * 1024)} MB in total).`,
+          advice: null,
+          details,
+        };
       default:
-        return error.message;
+        if (error.status === 429) {
+          return {
+            summary: 'Overleaf is limiting downloads of this project right now (HTTP 429).',
+            advice: 'Wait a minute, then try again.',
+            details: '',
+          };
+        }
+        if (error.status !== undefined && error.status >= 500) {
+          return {
+            summary: `Overleaf had a server problem (HTTP ${error.status}).`,
+            advice: 'Try again in a minute.',
+            details: '',
+          };
+        }
+        if (error.status !== undefined) {
+          return { summary: `Overleaf didn't send the project ZIP (HTTP ${error.status}).`, advice: null, details: '' };
+        }
+        return { summary: error.message, advice: null, details: '' };
     }
   }
-  if (error instanceof Error) return error.message;
-  return String(error);
+  return { summary: error instanceof Error ? error.message : String(error), advice: null, details: '' };
+}
+
+// A plain sentence for the user, its advice, then the raw cause, where it
+// adds anything, after "Details:".
+export function formatOverleafZipFetchError(error: unknown): string {
+  const { summary, advice, details } = describeOverleafZipFetchError(error);
+  return [summary, advice, details].filter((part) => part).join(' ');
 }

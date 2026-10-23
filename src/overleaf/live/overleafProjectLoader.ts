@@ -273,6 +273,9 @@ export type FlatProjectEntry = {
   id: string | null;
   path: string;
   kind: 'doc' | 'file';
+  // An uploaded file that Overleaf marks as a linked file (the tree has
+  // linkedFileData for it).
+  linked?: boolean;
 };
 
 export function flattenProjectTree(
@@ -302,11 +305,50 @@ function walkFolder(
     out.push({ id: doc._id, path: here2 ? `${here2}/${doc.name}` : doc.name, kind: 'doc' });
   }
   for (const file of folder.fileRefs ?? []) {
-    out.push({ id: file._id, path: here2 ? `${here2}/${file.name}` : file.name, kind: 'file' });
+    out.push({
+      id: file._id,
+      path: here2 ? `${here2}/${file.name}` : file.name,
+      kind: 'file',
+      ...(file.linkedFileData !== undefined && file.linkedFileData !== null ? { linked: true } : {}),
+    });
   }
   for (const sub of folder.folders ?? []) {
     walkFolder(sub, here2, out);
   }
+}
+
+export type FlatProjectFolder = {
+  id: string;
+  path: string;
+  // IDs of the docs and uploaded files directly inside it.
+  entryIds: string[];
+  // IDs of the folders directly inside it ('' for one without an ID, which
+  // therefore can never count as deleted).
+  folderIds: string[];
+};
+
+// Every folder below the project root (the root itself is left out), with
+// the entities it holds. Folders without an ID are skipped: they cannot be
+// addressed in Overleaf.
+export function flattenProjectFolders(
+  rootFolder: LiveProjectFolder[] | undefined,
+): FlatProjectFolder[] {
+  const out: FlatProjectFolder[] = [];
+  const walk = (folder: LiveProjectFolder, path: string, isRoot: boolean): void => {
+    if (!isRoot && folder._id) {
+      out.push({
+        id: folder._id,
+        path,
+        entryIds: [...(folder.docs ?? []), ...(folder.fileRefs ?? [])].map((e) => e._id),
+        folderIds: (folder.folders ?? []).map((f) => f._id ?? ''),
+      });
+    }
+    for (const sub of folder.folders ?? []) {
+      walk(sub, path ? `${path}/${sub.name}` : sub.name, false);
+    }
+  };
+  for (const folder of rootFolder?.slice(0, 1) ?? []) walk(folder, '', true);
+  return out;
 }
 
 export function entitiesToFlatTree(entities: ProjectEntity[]): FlatProjectEntry[] {

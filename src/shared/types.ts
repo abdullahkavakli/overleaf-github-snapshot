@@ -22,6 +22,10 @@ export type ProjectFile = {
   sha256: string;
   sizeBytes: number;
   isBinary: boolean;
+  // Set only by the GitHub-branch source, on a text file whose bytes are not
+  // valid UTF-8: `text` then holds U+FFFD where the invalid bytes were, so
+  // it must never be written to Overleaf.
+  invalidUtf8?: boolean;
 };
 
 export type DiffStatus = 'added' | 'modified' | 'deleted' | 'unchanged';
@@ -32,6 +36,8 @@ export type DiffItem = {
   oldSha?: string;
   newSha?: string;
   sizeBytes?: number;
+  // Plain-language caution shown with the row in the preview.
+  warning?: string;
 };
 
 export type GitHubTreeItem = {
@@ -77,11 +83,22 @@ export type ExperimentalConfig = {
   overleafWriteBackEnabled: boolean;
   localReplicaEnabled: boolean;
   requireZipBackupBeforeWriteBack: boolean;
+  // A pull that would replace existing Overleaf files asks the user to type
+  // "replace" in its preview (pullNeedsTypedConfirmation).
   requireConfirmationBeforeWriteBack: boolean;
   allowBinaryWriteBack: boolean;
+  // On: the pull takes every text file and ignores allowedWriteBackExtensions
+  // (see writeBackExtensionsFor).
+  includeAllFileTypes: boolean;
   allowedWriteBackExtensions: string[];
 };
 
 export type UIPreferences = {
+  // Off by default: the popup has no Manual ZIP upload (not the section, not
+  // the picker in the error view, not the one in the no-tab flow).
+  manualZipUploadEnabled: boolean;
+  // Only applies while manualZipUploadEnabled is on: show the Manual ZIP
+  // upload section in the popup all the time, not only after the automatic
+  // fetch fails or when no Overleaf tab is open.
   alwaysShowManualUpload: boolean;
 };

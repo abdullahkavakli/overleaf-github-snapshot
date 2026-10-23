@@ -127,6 +127,17 @@ export class GitHubClient {
     );
   }
 
+  // The bytes of a blob (getBlob, base64-decoded).
+  async getBlobBytes(owner: string, repo: string, sha: string): Promise<Uint8Array> {
+    const blob = await this.getBlob(owner, repo, sha);
+    // GitHub wraps the base64 at 60 characters; atob tolerates that, but
+    // stripping the whitespace is cheap insurance.
+    const bin = atob(blob.content.replace(/\s+/g, ''));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+
   createBlob(
     owner: string,
     repo: string,
@@ -198,38 +209,62 @@ async function safeText(res: Response): Promise<string> {
   }
 }
 
+function gitHubErrorMessage(err: GitHubApiError): string {
+  const body = err.parsedBody as { message?: unknown } | null;
+  return typeof body?.message === 'string' ? body.message : '';
+}
+
+// GitHub answers 409 "Git Repository is empty." to ref, commit and tree
+// reads on a repository with no commits yet.
+export function isEmptyRepositoryError(err: unknown): boolean {
+  return (
+    err instanceof GitHubApiError &&
+    err.status === 409 &&
+    gitHubErrorMessage(err).toLowerCase().includes('empty')
+  );
+}
+
+// A plain sentence for the user, then the raw status, API path and GitHub's
+// own message after "Details:".
 export function formatGitHubError(err: unknown): string {
   if (err instanceof GitHubApiError) {
-    const body = (err.parsedBody ?? null) as { message?: string; errors?: unknown } | null;
-    switch (err.status) {
-      case 401:
-        return 'GitHub token is invalid or expired.';
-      case 403: {
-        const msg = (body?.message ?? '').toLowerCase();
-        if (msg.includes('rate limit')) {
-          return 'GitHub rate limit reached. Please wait and try again.';
-        }
-        if (msg.includes('sso')) {
-          return 'GitHub token requires SSO authorization for this organization.';
-        }
-        return 'Token does not have required repository contents permission.';
-      }
-      case 404:
-        return 'Repository or branch was not found, or the token cannot access it.';
-      case 409:
-        return 'GitHub branch changed. Refresh diff and try again.';
-      case 422: {
-        const detail = body?.message ?? 'Validation failed.';
-        return `GitHub validation error: ${detail}`;
-      }
-      case 429:
-        return 'GitHub rate limit reached. Please wait and try again.';
-      default:
-        return `GitHub error ${err.status}: ${body?.message ?? 'unknown'}`;
-    }
+    const message = gitHubErrorMessage(err);
+    const details = `Details: HTTP ${err.status} ${err.path}${message ? ` (${message.replace(/\.$/, '')})` : ''}.`;
+    return `${describeGitHubStatus(err.status, message)} ${details}`;
   }
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+function describeGitHubStatus(status: number, message: string): string {
+  const lower = message.toLowerCase();
+  switch (status) {
+    case 401:
+      return 'GitHub token is invalid or expired.';
+    case 403:
+      if (lower.includes('rate limit')) {
+        return 'GitHub rate limit reached. Please wait and try again.';
+      }
+      if (lower.includes('sso')) {
+        return 'GitHub token requires SSO authorization for this organization.';
+      }
+      return 'GitHub denied access to this repository. Check that your token has "Contents: Read and write" and that this repository is selected for it.';
+    case 404:
+      return 'Repository or branch was not found, or the token cannot access it.';
+    case 409:
+      if (lower.includes('empty')) {
+        return 'This repository has no commits yet. Add any file to it on GitHub (for example a README), then try again.';
+      }
+      return 'GitHub reported a conflict on this branch. Try again in a moment.';
+    case 422:
+      return 'GitHub refused the request.';
+    case 429:
+      return 'GitHub rate limit reached. Please wait and try again.';
+    default:
+      return status >= 500
+        ? 'GitHub had a server problem. Try again in a minute.'
+        : 'GitHub returned an unexpected error.';
+  }
 }
 
 export async function testConnection(

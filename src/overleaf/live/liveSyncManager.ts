@@ -22,9 +22,10 @@ import {
   type LiveSnapshotResponseData,
   BRIDGE_VERSION,
 } from './bridgeProtocol';
-import { LiveSyncError, type OverleafLiveSnapshot } from './types';
+import { LiveSyncError, asDetail, type OverleafLiveSnapshot } from './types';
 
 const LIVE_FETCH_TIMEOUT_MS = 60_000;
+const RELOAD_TAB_RECOVERY = 'Reload the Overleaf tab, then try again.';
 
 // MV3 only auto-injects content scripts at navigation time, so any Overleaf
 // tab opened before the extension was installed or updated will not have
@@ -74,8 +75,8 @@ function sendBridgeRequestRaw<T>(
       resolve({
         ok: false,
         code: 'network',
-        message: `Live bridge did not respond within ${timeoutMs}ms.`,
-        recovery: 'Refresh the Overleaf tab and retry.',
+        message: `The Overleaf tab didn't respond within ${Math.round(timeoutMs / 1000)} seconds.`,
+        recovery: RELOAD_TAB_RECOVERY,
       });
     }, timeoutMs);
 
@@ -87,10 +88,8 @@ function sendBridgeRequestRaw<T>(
           resolve({
             ok: false,
             code: 'protocol_unavailable',
-            message:
-              lastError.message ??
-              'No content script responded on the Overleaf tab. Refresh it.',
-            recovery: 'Refresh the Overleaf project tab so the content script reloads.',
+            message: lastError.message ?? 'Nothing on the Overleaf tab answered.',
+            recovery: RELOAD_TAB_RECOVERY,
           });
           return;
         }
@@ -98,7 +97,7 @@ function sendBridgeRequestRaw<T>(
           resolve({
             ok: false,
             code: 'protocol_unavailable',
-            message: 'Live bridge returned an empty response.',
+            message: 'The Overleaf tab sent an empty response.',
           });
           return;
         }
@@ -116,10 +115,12 @@ function sendBridgeRequestRaw<T>(
 }
 
 // Public send. Auto-injects the content script on protocol_unavailable
-// and poll-retries the SAME request. Safe to retry because
-// chrome.runtime.lastError = "Receiving end does not exist" fires BEFORE
-// the message is delivered, so the original request never reached
-// page-side code — even non-idempotent writes haven't run.
+// and poll-retries the SAME request (up to 5 times). That is safe for
+// "Receiving end does not exist", which fires BEFORE the message is
+// delivered. Any other lastError, such as "message port closed before a
+// response was received", comes AFTER delivery and is replayed too, so:
+// a page-side handler must never answer protocol_unavailable once it may
+// have written, and every async listener branch must return true.
 export async function sendBridgeRequest<T>(
   tabId: number,
   request: BridgeRequest,
@@ -135,10 +136,10 @@ export async function sendBridgeRequest<T>(
     return {
       ok: false,
       code: 'protocol_unavailable',
-      message: `Live bridge not reachable and on-demand injection failed: ${
+      message: `The extension couldn't start on the Overleaf tab: ${
         e instanceof Error ? e.message : String(e)
       }`,
-      recovery: 'Refresh the Overleaf project tab so the content script reloads.',
+      recovery: RELOAD_TAB_RECOVERY,
     };
   }
 
@@ -153,8 +154,8 @@ export async function sendBridgeRequest<T>(
   return {
     ok: false,
     code: 'protocol_unavailable',
-    message: 'Live bridge not reachable on the Overleaf tab even after on-demand injection.',
-    recovery: 'Refresh the Overleaf project tab manually.',
+    message: "The extension didn't start on the Overleaf tab.",
+    recovery: RELOAD_TAB_RECOVERY,
   };
 }
 
@@ -163,10 +164,14 @@ export async function fetchOverleafLiveSnapshot(
   experimental: ExperimentalConfig,
 ): Promise<OverleafLiveSnapshot> {
   if (!experimental.experimentalLiveSyncEnabled) {
-    throw new LiveSyncError('live_sync_disabled', 'Experimental live sync is disabled.');
+    throw new LiveSyncError('live_sync_disabled', 'Experimental features are turned off in Options.');
   }
   if (!experimental.liveReadOnlyPullEnabled) {
-    throw new LiveSyncError('live_sync_disabled', 'Live read-only pull is disabled.');
+    throw new LiveSyncError(
+      'live_sync_disabled',
+      'Reading from the Overleaf tab is turned off in Options.',
+      'Turn on “Enable reading from the Overleaf tab” in Options.',
+    );
   }
 
   const tab = await findOverleafTab(projectId);
@@ -191,15 +196,15 @@ export async function fetchOverleafLiveSnapshot(
   if (!ping.ok) {
     throw new LiveSyncError(
       'protocol_unavailable',
-      `Live bridge not reachable on the Overleaf tab: ${ping.message}`,
-      ping.recovery ?? 'Refresh the Overleaf tab so the updated content script loads.',
+      `Couldn't connect to the Overleaf tab. Details: ${asDetail(ping.message)}.`,
+      ping.recovery ?? RELOAD_TAB_RECOVERY,
     );
   }
   if (!ping.data.onProjectPage) {
     throw new LiveSyncError(
       'project_join_failed',
-      'The Overleaf tab is not currently on a project URL.',
-      'Open the project (https://www.overleaf.com/project/...) and try again.',
+      'The Overleaf tab is not showing a project.',
+      'Open the project in that tab, then try again.',
     );
   }
 

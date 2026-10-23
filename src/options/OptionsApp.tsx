@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type {
   ConnectionTestResult,
   ExperimentalConfig,
@@ -13,6 +13,9 @@ import {
   DEFAULT_IGNORE_PATTERNS,
   DEFAULT_REPO_CONFIG,
   DEFAULT_UI_PREFERENCES,
+  SYMLINK_SKIPPED_REASON_PREFIX,
+  buildTokenCreationUrl,
+  writeBackExtensionsFor,
 } from '../shared/constants';
 import {
   clearExperimentalConfig,
@@ -20,11 +23,13 @@ import {
   clearProjectLinks,
   clearUIPreferences,
   getExperimentalConfig,
+  getMirrorMatchEnabled,
   getProjectLinkMap,
   getUIPreferences,
   isConfigured,
   removeProjectLink,
   setExperimentalConfig,
+  setMirrorMatchEnabled,
   setProjectLink,
   setUIPreferences,
 } from '../storage/extensionStorage';
@@ -36,14 +41,32 @@ import {
 } from '../overleaf/live/bridgeClient';
 import { flattenProjectTree } from '../overleaf/live/overleafProjectLoader';
 import { writeSelectedFilesBackToOverleaf } from '../overleaf/live/overleafWriteBack';
-import { LiveSyncError, type WriteBackResult } from '../overleaf/live/types';
+import type { WriteBackResult } from '../overleaf/live/types';
 import { computeSha256 } from '../diff/fileHasher';
 import { sourceFromGitHubBranch } from '../sources/sourceFromGitHubBranch';
 import {
-  pullSnapshotIntoOverleaf,
-  recoveryForPullError,
+  applyPullPlan,
+  describeCreateNote,
+  describeFileReplaceNote,
+  describeLineChange,
+  describeNothingOnGitHub,
+  describePullError,
+  describePullOutcome,
+  describePullPlan,
+  discardPullPlan,
+  isPullConfirmationTyped,
+  mirrorInputFromSnapshot,
+  planPullIntoOverleaf,
+  pullConfirmationWord,
+  pullPlanChangeCount,
+  pullResultLabel,
+  pullRowMessage,
+  pullSourceOptions,
   type BinaryResult,
   type CreateResult,
+  type DeleteResult,
+  type FileReplaceResult,
+  type PullPlan,
 } from '../sources/pullFromGitHubHelpers';
 
 type SaveState =
@@ -167,7 +190,7 @@ export function Options(): React.ReactElement {
     };
     const token = editing.token.trim();
     if (!isConfigured(repo)) {
-      setEditError('Owner, repository, and branch are required.');
+      setEditError('Owner and repository are required.');
       return;
     }
     if (token.length === 0) {
@@ -182,7 +205,11 @@ export function Options(): React.ReactElement {
   };
 
   const removeMapping = async (projectId: string) => {
-    if (!confirm(`Remove the mapping for project ${projectId}? This does not touch GitHub.`)) {
+    if (
+      !confirm(
+        `Remove the mapping for project ${projectId}? Its saved GitHub token is removed from this extension too (it is not revoked on GitHub). Nothing on GitHub changes.`,
+      )
+    ) {
       return;
     }
     await removeProjectLink(projectId);
@@ -193,7 +220,7 @@ export function Options(): React.ReactElement {
   const resetAll = async () => {
     if (
       !confirm(
-        'Reset all settings? This clears every project→repo mapping (including tokens), the legacy single config, display preferences, and experimental settings.',
+        'Reset all settings? This removes every linked project and saved GitHub token and resets display and experimental settings. Nothing on GitHub or Overleaf is changed.',
       )
     ) {
       return;
@@ -238,13 +265,14 @@ export function Options(): React.ReactElement {
 
   return (
     <div className="container">
+      <PinHint />
       <header className="page-header">
         <h1>Overleaf GitHub Snapshot</h1>
         <p className="lead">
           Link each Overleaf project to its own GitHub repository and token.
-          When you open a project, the popup automatically resolves its repo.
-          Everything is stored locally in <code>chrome.storage.local</code> and
-          only sent to <code>api.github.com</code>.
+          When you open a linked project, the popup uses that project's
+          repository automatically. Settings and tokens are stored only in this
+          browser, and tokens are sent only to GitHub.
         </p>
       </header>
 
@@ -296,25 +324,53 @@ export function Options(): React.ReactElement {
         <h2 id="sec-display">Popup display</h2>
         <div className="checkbox-row">
           <input
-            id="alwaysShowManualUpload"
+            id="manualZipUploadEnabled"
             type="checkbox"
-            checked={uiPrefs.alwaysShowManualUpload}
+            checked={uiPrefs.manualZipUploadEnabled}
+            aria-controls="manual-zip-suboptions"
+            aria-expanded={uiPrefs.manualZipUploadEnabled}
             onChange={(e) =>
               void updateUiPrefs({
                 ...uiPrefs,
-                alwaysShowManualUpload: e.target.checked,
+                manualZipUploadEnabled: e.target.checked,
               })
             }
           />
-          <label htmlFor="alwaysShowManualUpload">
-            Always show Manual ZIP upload
+          <label htmlFor="manualZipUploadEnabled">
+            Enable manual ZIP upload
             <div className="hint">
-              By default the popup hides the <em>Manual ZIP upload</em> section
-              until <em>Fetch from current Overleaf project</em> fails. Turn
-              this on to always show it.
+              Lets you upload a source ZIP you downloaded from Overleaf (File →
+              Download → Download as source (.zip)) when the automatic download
+              doesn't work.
             </div>
           </label>
         </div>
+        {uiPrefs.manualZipUploadEnabled && (
+          <div id="manual-zip-suboptions" className="display-suboptions">
+            <div className="checkbox-row">
+              <input
+                id="alwaysShowManualUpload"
+                type="checkbox"
+                checked={uiPrefs.alwaysShowManualUpload}
+                onChange={(e) =>
+                  void updateUiPrefs({
+                    ...uiPrefs,
+                    alwaysShowManualUpload: e.target.checked,
+                  })
+                }
+              />
+              <label htmlFor="alwaysShowManualUpload">
+                Always show Manual ZIP upload
+                <div className="hint">
+                  By default the popup hides the <em>Manual ZIP upload</em>{' '}
+                  section until <em>Fetch from current Overleaf project</em>{' '}
+                  fails or no Overleaf tab is open. Turn this on to always
+                  show it.
+                </div>
+              </label>
+            </div>
+          </div>
+        )}
         {uiPrefsSaveError && (
           <div className="banner error" role="alert" style={{ marginTop: 10 }}>
             Save failed: {uiPrefsSaveError}
@@ -327,9 +383,10 @@ export function Options(): React.ReactElement {
         <div className="banner info" style={{ marginBottom: 14 }}>
           <strong>Experimental.</strong> These features depend on Overleaf
           internals that are not officially documented and may break without
-          warning. The stable workflow is the automatic ZIP snapshot. All
-          experimental features are disabled by default. These settings are
-          global (not per project).
+          warning. The stable workflow is the automatic ZIP snapshot. Pull
+          from GitHub into Overleaf is on by default, and still shows a
+          preview before it changes anything. The other experimental features
+          are off by default. These settings are global (not per project).
         </div>
 
         <div className="checkbox-row">
@@ -349,9 +406,9 @@ export function Options(): React.ReactElement {
           <label htmlFor="experimentalLiveSyncEnabled">
             Enable experimental live sync
             <div className="hint">
-              Master switch. When off, the experimental options below are
-              hidden, no Live Sync UI is shown in the popup, and no live
-              protocol code runs.
+              Shows the experimental features below, each with its own switch.
+              Overleaf write-back starts on; the others start off. When this
+              is off, none of them run.
             </div>
           </label>
         </div>
@@ -361,7 +418,7 @@ export function Options(): React.ReactElement {
 
             <div className="experimental-feature-card">
               <h3 className="experimental-feature-heading">
-                Live read-only pull (Overleaf → GitHub)
+                Read from the open Overleaf tab (Overleaf → GitHub)
               </h3>
               <div className="checkbox-row">
                 <input
@@ -376,12 +433,12 @@ export function Options(): React.ReactElement {
                   }
                 />
                 <label htmlFor="liveReadOnlyPullEnabled">
-                  Enable live read-only pull
+                  Enable reading from the Overleaf tab
                   <div className="hint">
-                    Read every doc and file from Overleaf via the live
-                    session, then commit to GitHub. Slower than the ZIP
-                    route on large projects. Read-only — never modifies
-                    Overleaf. Independent of write-back below.
+                    Adds a popup button that reads your project from the open
+                    Overleaf tab instead of downloading a ZIP, then shows the
+                    changes to commit. Slower on large projects. Never changes
+                    your Overleaf project.
                   </div>
                 </label>
               </div>
@@ -406,10 +463,11 @@ export function Options(): React.ReactElement {
                 <label htmlFor="overleafWriteBackEnabled">
                   Enable Overleaf write-back
                   <div className="hint">
-                    Powers <em>Pull from GitHub into Overleaf</em> in the
-                    popup plus the dev panels below. Each write runs the
-                    conflict detector + OT verify path. Independent of
-                    the live read-only pull toggle above.
+                    Adds <em>Pull from GitHub into Overleaf</em> to the
+                    popup, plus two developer test tools below. Before writing
+                    a file, the extension checks it hasn't changed in Overleaf
+                    since it was read, then reads it again to confirm the
+                    write.
                   </div>
                 </label>
               </div>
@@ -429,10 +487,14 @@ export function Options(): React.ReactElement {
                       }
                     />
                     <label htmlFor="requireZipBackupBeforeWriteBack">
-                      Require ZIP backup before write-back
+                      Check that Overleaf can export the project before writing
                       <div className="hint">
-                        Fetch a fresh ZIP snapshot before writing any change to
-                        Overleaf. Strongly recommended.
+                        Before anything is written, downloads the project's ZIP
+                        from Overleaf and stops if that fails. The ZIP is not
+                        saved: to keep a copy you can restore, download the
+                        project yourself (<em>File → Download → Download as
+                        source (.zip)</em>). To undo a pull, use Overleaf's
+                        History.
                       </div>
                     </label>
                   </div>
@@ -450,10 +512,10 @@ export function Options(): React.ReactElement {
                       }
                     />
                     <label htmlFor="requireConfirmationBeforeWriteBack">
-                      Require confirmation before each write-back
+                      Ask me to confirm before replacing files in Overleaf
                       <div className="hint">
-                        Show the changed file list and require explicit typed
-                        confirmation before any write. Strongly recommended.
+                        Shows the files a pull would replace and asks you to
+                        type 'replace' before anything is written.
                       </div>
                     </label>
                   </div>
@@ -471,10 +533,33 @@ export function Options(): React.ReactElement {
                       }
                     />
                     <label htmlFor="allowBinaryWriteBack">
-                      Allow binary file write-back
+                      Allow uploading new images and other non-text files
                       <div className="hint">
-                        Off by default. Write-back is generally limited to text
-                        source files. Binaries are riskier to overwrite.
+                        Images, PDFs and other non-text files that are on GitHub
+                        but not in Overleaf are uploaded when <em>Also create new
+                        files in Overleaf</em> is ticked. Files already in
+                        Overleaf are never replaced.
+                      </div>
+                    </label>
+                  </div>
+
+                  <div className="checkbox-row" style={{ marginTop: 14 }}>
+                    <input
+                      id="includeAllFileTypes"
+                      type="checkbox"
+                      checked={experimental.includeAllFileTypes}
+                      onChange={(e) =>
+                        setExperimental({
+                          ...experimental,
+                          includeAllFileTypes: e.target.checked,
+                        })
+                      }
+                    />
+                    <label htmlFor="includeAllFileTypes">
+                      Include all file types
+                      <div className="hint">
+                        The pull copies every text file, whatever its type, and the
+                        list below is not used.
                       </div>
                     </label>
                   </div>
@@ -485,6 +570,7 @@ export function Options(): React.ReactElement {
                       id="writeBackExts"
                       value={extText}
                       onChange={(e) => setExtText(e.target.value)}
+                      disabled={experimental.includeAllFileTypes}
                       spellCheck={false}
                       style={{ minHeight: 110 }}
                     />
@@ -496,10 +582,7 @@ export function Options(): React.ReactElement {
                   </div>
 
                   <WriteBackDevPanel experimental={experimental} />
-                  <PullFromGitHubDevPanel
-                    links={links}
-                    experimental={experimental}
-                  />
+                  <PullFromGitHubDevPanel links={links} experimental={experimental} />
                 </>
               )}
             </div>
@@ -523,10 +606,8 @@ export function Options(): React.ReactElement {
                 <label htmlFor="localReplicaEnabled">
                   Enable local replica prototype
                   <div className="hint">
-                    Choose a local folder to compare against Overleaf.
-                    Browser-only, no background sync, no silent overwrites.
-                    Requires the File System Access API. Module-only — no
-                    popup UI in this build.
+                    Local folder comparison isn't available yet. This setting
+                    does nothing for now.
                   </div>
                 </label>
               </div>
@@ -575,6 +656,51 @@ export function Options(): React.ReactElement {
           Reset all settings
         </button>
       </div>
+    </div>
+  );
+}
+
+// Suggests pinning the toolbar icon, only while Chrome reports it unpinned.
+// chrome.action.getUserSettings needs Chrome 91+; without it we say nothing.
+// Pinning happens in browser UI that fires no page event, so re-check
+// whenever the page regains focus or becomes visible.
+function PinHint(): React.ReactElement | null {
+  const [unpinned, setUnpinned] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (typeof chrome.action?.getUserSettings !== 'function') return;
+    let cancelled = false;
+    const check = () => {
+      try {
+        Promise.resolve(chrome.action.getUserSettings()).then(
+          (settings) => {
+            if (!cancelled) setUnpinned(settings?.isOnToolbar === false);
+          },
+          () => {},
+        );
+      } catch {
+        // Treat a throwing API like a missing one: no hint.
+      }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') check();
+    };
+    check();
+    window.addEventListener('focus', check);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', check);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, []);
+
+  if (!unpinned) return null;
+  return (
+    <div className="banner info" role="note" style={{ marginBottom: 20 }}>
+      <strong>Tip:</strong> pin Overleaf GitHub Snapshot to your toolbar so
+      it's one click away. Click the puzzle-piece icon next to the address bar,
+      then the pin next to Overleaf GitHub Snapshot.
     </div>
   );
 }
@@ -628,7 +754,7 @@ function MappingRow({
             Project <code>{projectId}</code> · branch <code>{link.repo.branch}</code>
             {link.repo.targetDir ? (
               <>
-                {' '}· dir <code>{link.repo.targetDir}/</code>
+                {' '}· target directory <code>{link.repo.targetDir}/</code>
               </>
             ) : null}{' '}
             · token {link.token.trim().length > 0 ? 'set' : <strong>missing</strong>}
@@ -719,7 +845,8 @@ function MappingEditor({
             onChange={(e) => onChange({ ...state, projectId: e.target.value })}
           />
           <div className="hint">
-            Paste the project URL from your browser, or just the ID segment.
+            Paste the project URL from your browser, or just the ID (the part
+            after <code>/project/</code>).
           </div>
         </div>
       )}
@@ -792,6 +919,10 @@ function MappingEditor({
             placeholder="paper"
             onChange={(e) => setRepo({ targetDir: e.target.value })}
           />
+          <div className="hint">
+            Optional. The folder in the repository that holds the Overleaf
+            files. Leave empty for the top level.
+          </div>
         </div>
       </div>
 
@@ -821,9 +952,13 @@ function MappingEditor({
           </button>
         </div>
         <div className="hint">
-          Use a <strong>fine-grained personal access token</strong> scoped to{' '}
-          <em>only this repository</em>, with <code>Contents: Read and write</code>{' '}
-          and <code>Metadata: Read</code> permissions.
+          <a href={buildTokenCreationUrl(state.repo)} target="_blank" rel="noreferrer">
+            Create a token on GitHub ↗
+          </a>{' '}
+          — opens with <code>Contents: Read and write</code> and{' '}
+          <code>Metadata: Read-only</code> pre-selected. Under{' '}
+          <strong>Repository access</strong>, choose <em>Only select repositories</em>{' '}
+          and pick this repo, then click <strong>Generate token</strong> and paste it here.
         </div>
       </div>
 
@@ -837,9 +972,11 @@ function MappingEditor({
         <label htmlFor="ed-deletions">
           Include deletions by default
           <div className="hint">
-            When enabled, files present in the repo but missing from the source
-            are removed (only inside the target directory). Toggleable per
-            commit in the popup.
+            When on, files in the GitHub repository that aren't in your
+            Overleaf project (or uploaded ZIP) are deleted from GitHub when you
+            commit. Only inside the target directory; files matching the ignore
+            patterns are kept. You can change this for each commit in the
+            popup.
           </div>
         </label>
       </div>
@@ -853,9 +990,10 @@ function MappingEditor({
           spellCheck={false}
         />
         <div className="hint">
-          Glob-like patterns matched against source paths. <code>*</code> for any
-          non-slash chars, <code>**</code> across slashes. <code>#</code> lines
-          are comments.
+          Matching files are never committed to GitHub, e.g.{' '}
+          <code>*.aux</code>. <code>*</code> matches any part of a name,{' '}
+          <code>**</code> any number of folders. Lines starting with{' '}
+          <code>#</code> are notes.
         </div>
       </div>
 
@@ -910,7 +1048,7 @@ function WriteBackDevPanel({
     try {
       const md = await fetchProjectMetadataViaBridge(trimmedProjectId);
       if (!md.ok) {
-        throw new Error(`metadata: ${md.message}`);
+        throw new Error(`Could not read the project's file list. Details: ${md.message}`);
       }
       const entries = flattenProjectTree(md.data.rootFolder);
       const entry = entries.find((e) => e.path === trimmedPath && e.kind === 'doc');
@@ -918,12 +1056,12 @@ function WriteBackDevPanel({
         const docs = entries.filter((e) => e.kind === 'doc').map((e) => e.path);
         const sample = docs.slice(0, 8).join(', ');
         throw new Error(
-          `No doc at path "${trimmedPath}". First docs in this project: ${sample}${docs.length > 8 ? '…' : ''}`,
+          `No editable text file at "${trimmedPath}". Text files in this project include: ${sample}${docs.length > 8 ? '…' : ''}`,
         );
       }
       const read = await readDocViaBridge(trimmedProjectId, entry.id);
       if (!read.ok) {
-        throw new Error(`read: ${read.message}`);
+        throw new Error(`Could not read the file. Details: ${read.message}`);
       }
       setBaseText(read.data.text);
       setNewText(read.data.text);
@@ -948,7 +1086,7 @@ function WriteBackDevPanel({
         {
           requireZipBackup: experimental.requireZipBackupBeforeWriteBack,
           requireConfirmation: false,
-          allowedExtensions: experimental.allowedWriteBackExtensions,
+          allowedExtensions: writeBackExtensionsFor(experimental),
           allowBinary: experimental.allowBinaryWriteBack,
         },
       );
@@ -980,12 +1118,10 @@ function WriteBackDevPanel({
         Developer write-back test
       </h3>
       <div className="hint" style={{ marginBottom: 12 }}>
-        Manual validation harness for the live write-back path. Reads a
-        single doc from Overleaf via the content-script bridge, lets you
-        edit it, then writes it back through the full safety pipeline
-        (ZIP backup, conflict detector, OT, verify-after-write). Honors
-        the toggles above. Use against a throwaway project until you have
-        confirmed the four outcomes behave correctly.
+        For testing write-back by hand. Reads one text file, lets you edit
+        it, then writes it back with the same checks as Pull from GitHub
+        (export check if on, conflict check, verify after write). The
+        confirmation setting doesn't apply here. Use a throwaway project.
       </div>
 
       <div className="row">
@@ -1003,7 +1139,7 @@ function WriteBackDevPanel({
           />
         </div>
         <div className="field">
-          <label htmlFor="wb-path">Doc path</label>
+          <label htmlFor="wb-path">File path</label>
           <input
             id="wb-path"
             className="mono"
@@ -1112,23 +1248,22 @@ function WriteBackDevPanel({
 
 // "Pull from GitHub" — reverse-direction sibling of WriteBackDevPanel.
 //
-// Reads the branch HEAD of the chosen project's linked repo, then
-// loops every text file through the existing write-back orchestration:
+// Reads the branch HEAD of the chosen project's linked repo, then runs
+// the same two steps as the popup, on one Overleaf bridge session:
 //
-//   GitHub tree (text blobs only, filtered to allowedExtensions later
-//                in writeSelectedFilesBackToOverleaf)
-//     -> pullSnapshotIntoOverleaf, on one Overleaf bridge session:
-//        resolve doc IDs, ZIP backup if enabled, read current Overleaf
-//        as baseText, then writeSelectedFilesBackToOverleaf (fresh
-//        re-read, conflict detector, OT diff, applyOtUpdate,
-//        verify-after-write)
+//   GitHub tree (text blobs, plus binaries if enabled)
+//     -> planPullIntoOverleaf: resolve doc IDs, ZIP backup if enabled,
+//        read current Overleaf text. Writes nothing; the result is the
+//        preview (files to replace, create, upload).
+//     -> applyPullPlan, after the user confirms: writes only the planned
+//        files through writeSelectedFilesBackToOverleaf (fresh re-read,
+//        conflict check against the preview's text, OT diff,
+//        applyOtUpdate, verify-after-write), then creates and uploads.
 //
-// First-cut scope:
-//   - Text files only.
-//   - Files in GitHub with no matching Overleaf doc are reported as
-//     skipped (new-file creation lives in a later phase).
-//   - Files in Overleaf with no GitHub source are untouched.
-//   - No preview; the existing per-file safety gates carry the load.
+// Files in Overleaf with no GitHub source are untouched, unless "Make
+// Overleaf match GitHub exactly" is ticked: then the preview also lists the
+// files it would delete and the uploaded files it would replace, and the
+// confirm asks for `delete` (or `delete N` for a large deletion).
 function PullFromGitHubDevPanel({
   links,
   experimental,
@@ -1140,7 +1275,9 @@ function PullFromGitHubDevPanel({
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
     entries[0]?.[0] ?? '',
   );
-  const [busy, setBusy] = useState<'idle' | 'pulling'>('idle');
+  const [busy, setBusy] = useState<'idle' | 'planning' | 'applying'>('idle');
+  const [plan, setPlan] = useState<PullPlan | null>(null);
+  const [typedConfirmation, setTypedConfirmation] = useState<string>('');
   const [phase, setPhase] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [errorRecovery, setErrorRecovery] = useState<string | null>(null);
@@ -1153,71 +1290,160 @@ function PullFromGitHubDevPanel({
   >([]);
   const [commitSha, setCommitSha] = useState<string | null>(null);
   const [createMissing, setCreateMissing] = useState<boolean>(false);
+  const [fileReplaceResults, setFileReplaceResults] = useState<FileReplaceResult[] | null>(null);
+  const [deleteResults, setDeleteResults] = useState<DeleteResult[] | null>(null);
+  // "Make Overleaf match GitHub exactly" is remembered per project, as soon
+  // as it is clicked (apart from the Save button of the settings above). It
+  // is off until the stored choice for the selected project has been read.
+  const [mirror, setMirror] = useState<boolean>(false);
+  const [mirrorLoaded, setMirrorLoaded] = useState<boolean>(false);
+  useEffect(() => {
+    let cancelled = false;
+    setMirror(false);
+    setMirrorLoaded(false);
+    void (async () => {
+      try {
+        if (selectedProjectId) {
+          const remembered = await getMirrorMatchEnabled(selectedProjectId);
+          if (!cancelled) setMirror(remembered);
+        }
+      } catch {
+        // Unreadable: it stays off.
+      }
+      if (!cancelled) setMirrorLoaded(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedProjectId]);
+  const changeMirror = (value: boolean) => {
+    setMirror(value);
+    void setMirrorMatchEnabled(selectedProjectId, value).catch(() => {
+      // The choice still applies to pulls started from this page.
+    });
+  };
 
-  const onPull = async () => {
+  // A plan keeps its Overleaf session open until it is applied or
+  // discarded; discard it if the panel goes away with a preview open.
+  const planRef = useRef<PullPlan | null>(null);
+  const holdPlan = (next: PullPlan | null) => {
+    planRef.current = next;
+    setPlan(next);
+  };
+  useEffect(
+    () => () => {
+      if (planRef.current) void discardPullPlan(planRef.current);
+    },
+    [],
+  );
+
+  const showError = (e: unknown) => {
+    // Same text as the popup shows.
+    const described = describePullError(e);
+    setError(described.message);
+    setErrorRecovery(described.recovery);
+  };
+
+  // Step 1: work out what the pull would change. Writes nothing.
+  const onPreview = async () => {
     setError(null);
     setErrorRecovery(null);
     setResults(null);
     setCreateResults(null);
     setBinaryResults(null);
+    setFileReplaceResults(null);
+    setDeleteResults(null);
     setNoOverleafDocs([]);
     setSourceSkipped([]);
     setCommitSha(null);
-    setBusy('pulling');
+    setTypedConfirmation('');
 
     const link = links[selectedProjectId];
     if (!link) {
       setError(`No mapping found for ${selectedProjectId}.`);
-      setBusy('idle');
       return;
     }
+    setBusy('planning');
 
     try {
-      // 1. Fetch the GitHub branch.
       setPhase('Fetching GitHub branch…');
-      const snapshot = await sourceFromGitHubBranch(link.token, link.repo, {
-        allowedExtensions: experimental.allowedWriteBackExtensions,
-        includeBinaries: experimental.allowBinaryWriteBack,
-      });
+      const snapshot = await sourceFromGitHubBranch(
+        link.token,
+        link.repo,
+        pullSourceOptions(experimental, mirror),
+      );
       setCommitSha(snapshot.commitSha);
       setSourceSkipped(snapshot.skipped);
 
       if (snapshot.files.length === 0) {
         setError(
-          `GitHub branch ${link.repo.branch} contains no pullable files${link.repo.targetDir ? ` under ${link.repo.targetDir}/` : ''}.`,
+          describeNothingOnGitHub(
+            link.repo.branch,
+            link.repo.targetDir,
+            snapshot.skipped.length,
+            mirror,
+          ),
         );
         return;
       }
 
-      // 2–6. Same pipeline as the popup, on one Overleaf session: resolve
-      //      IDs, ZIP backup, read, write with the existing safety gates,
-      //      then create missing docs and upload new binaries if opted in.
-      const outcome = await pullSnapshotIntoOverleaf({
+      const next = await planPullIntoOverleaf({
         projectId: selectedProjectId,
         files: snapshot.files,
+        skippedOnGitHub: snapshot.skipped,
         experimental,
         createMissing,
+        ...(mirror ? { mirror: mirrorInputFromSnapshot(snapshot, link.repo) } : {}),
         onProgress: setPhase,
-        onMissingInOverleaf: setNoOverleafDocs,
       });
-      if (outcome.kind === 'nothing-to-do') {
-        setError(
-          `None of the GitHub files have a matching doc in Overleaf. ${outcome.toCreateCount} file(s) would need to be created — turn on "Also create new files" to add them.`,
-        );
-        return;
-      }
-      setResults(outcome.results);
-      setCreateResults(outcome.createResults);
-      setBinaryResults(outcome.binaryResults);
+      setNoOverleafDocs(next.missingInOverleaf);
+      holdPlan(next);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      // Same hint as the popup shows.
-      if (e instanceof LiveSyncError) setErrorRecovery(recoveryForPullError(e));
+      showError(e);
     } finally {
       setBusy('idle');
       setPhase('');
     }
   };
+
+  // Step 2, after the user confirmed: write exactly what the preview listed.
+  const onApply = async () => {
+    const confirmed = planRef.current;
+    if (!confirmed) return;
+    holdPlan(null);
+    setBusy('applying');
+    try {
+      const outcome = await applyPullPlan(confirmed, setPhase, typedConfirmation);
+      setResults(outcome.results);
+      setCreateResults(outcome.createResults);
+      setBinaryResults(outcome.binaryResults);
+      setFileReplaceResults(outcome.fileReplaceResults ?? null);
+      setDeleteResults(outcome.deleteResults ?? null);
+    } catch (e) {
+      showError(e);
+    } finally {
+      setBusy('idle');
+      setPhase('');
+    }
+  };
+
+  // Cancel, or OK on a preview with nothing to pull. Nothing is written.
+  const onDiscard = () => {
+    if (planRef.current) void discardPullPlan(planRef.current);
+    holdPlan(null);
+    setTypedConfirmation('');
+    setCommitSha(null);
+    setNoOverleafDocs([]);
+    setSourceSkipped([]);
+  };
+
+  const previewText = plan ? describePullPlan(plan) : null;
+  // The word to type (`replace`, `delete` or `delete N`), or null.
+  const confirmationWord = plan ? pullConfirmationWord(plan) : null;
+  const canConfirm =
+    plan !== null &&
+    pullPlanChangeCount(plan) > 0 &&
+    (confirmationWord === null || isPullConfirmationTyped(typedConfirmation, plan));
 
   if (entries.length === 0) {
     return (
@@ -1230,7 +1456,7 @@ function PullFromGitHubDevPanel({
         }}
       >
         <h3 style={{ margin: '0 0 4px', fontSize: 14 }}>
-          Pull from GitHub into Overleaf
+          Developer pull test (GitHub → Overleaf)
         </h3>
         <div className="hint">
           Add a project → repo mapping above before you can pull from GitHub
@@ -1241,25 +1467,31 @@ function PullFromGitHubDevPanel({
   }
 
   const summary =
-    results || createResults || binaryResults
-      ? {
-          written: results?.filter((r) => r.status === 'written').length ?? 0,
-          skipped: results?.filter((r) => r.status === 'skipped').length ?? 0,
-          conflict: results?.filter((r) => r.status === 'conflict').length ?? 0,
-          failed: results?.filter((r) => r.status === 'failed').length ?? 0,
-          created: createResults?.filter((r) => r.status === 'created').length ?? 0,
-          createFailed: createResults?.filter((r) => r.status === 'failed').length ?? 0,
-          createSkipped: createResults?.filter((r) => r.status === 'skipped').length ?? 0,
-          uploaded: binaryResults?.filter((r) => r.status === 'uploaded').length ?? 0,
-          uploadFailed: binaryResults?.filter((r) => r.status === 'failed').length ?? 0,
-          uploadSkipped: binaryResults?.filter((r) => r.status === 'skipped').length ?? 0,
-        }
+    results || createResults || binaryResults || fileReplaceResults || deleteResults
+      ? describePullOutcome({
+          results,
+          createResults,
+          binaryResults,
+          fileReplaceResults,
+          deleteResults,
+        }).join(', ')
       : null;
+  const anyProblem =
+    [results, createResults, binaryResults].some((rows) =>
+      rows?.some((r) => r.status === 'failed' || r.status === 'conflict'),
+    ) ||
+    [fileReplaceResults, deleteResults].some((rows) =>
+      rows?.some((r) => r.status !== 'replaced' && r.status !== 'deleted'),
+    );
 
+  const isSymlinkSkip = (s: { reason: string }) => s.reason.startsWith(SYMLINK_SKIPPED_REASON_PREFIX);
+  const linkItems = sourceSkipped.filter(isSymlinkSkip);
   const binaryItems = sourceSkipped.filter((s) => s.reason.startsWith('binary'));
   const extFilteredItems = sourceSkipped.filter(
-    (s) => !s.reason.startsWith('binary'),
+    (s) => !s.reason.startsWith('binary') && !isSymlinkSkip(s),
   );
+  // Created files are in the create results, not "not pulled".
+  const notInOverleaf = createResults ? [] : noOverleafDocs;
 
   return (
     <div
@@ -1271,15 +1503,13 @@ function PullFromGitHubDevPanel({
       }}
     >
       <h3 style={{ margin: '0 0 4px', fontSize: 14 }}>
-        Pull from GitHub into Overleaf
+        Developer pull test (GitHub → Overleaf)
       </h3>
       <div className="hint" style={{ marginBottom: 12 }}>
-        Reverses the snapshot direction: reads the branch HEAD of the
-        linked GitHub repo and writes every matching text file back to
-        Overleaf via the live bridge. Text files only in this build;
-        files present in GitHub but not in Overleaf are reported as
-        skipped (new-file creation comes later). Each write goes through
-        the same safety pipeline as the write-back test panel above.
+        Copies the latest version of the linked GitHub branch into the
+        chosen Overleaf project, the same way as the popup. You first see
+        which files would change, and nothing is written until you
+        confirm. The project must be open in an Overleaf tab.
       </div>
 
       <div className="field">
@@ -1288,6 +1518,7 @@ function PullFromGitHubDevPanel({
           id="pgh-pid"
           value={selectedProjectId}
           onChange={(e) => setSelectedProjectId(e.target.value)}
+          disabled={busy !== 'idle' || plan !== null}
         >
           {entries.map(([pid, link]) => (
             <option key={pid} value={pid}>
@@ -1302,16 +1533,39 @@ function PullFromGitHubDevPanel({
         <input
           id="pgh-create-missing"
           type="checkbox"
-          checked={createMissing}
+          checked={createMissing || mirror}
           onChange={(e) => setCreateMissing(e.target.checked)}
+          disabled={busy !== 'idle' || plan !== null || mirror}
         />
         <label htmlFor="pgh-create-missing">
           Also create new files in Overleaf
           <div className="hint">
-            For each GitHub file with no matching Overleaf doc, create
-            the doc (and any missing parent folders) and seed it with the
-            GitHub content. Filtered by your allowed write-back
-            extensions. Off by default — flip on intentionally.
+            Adds files that are on GitHub but not yet in Overleaf, creating
+            folders as needed. Text files must have an allowed type; images,
+            PDFs and other non-text files are uploaded only if{' '}
+            <em>Allow uploading new images and other non-text files</em> is
+            on.
+            {mirror &&
+              ' Included while Make Overleaf match GitHub exactly is on, for every file type.'}
+          </div>
+        </label>
+      </div>
+
+      <div className="checkbox-row" style={{ marginTop: 8 }}>
+        <input
+          id="pgh-mirror"
+          type="checkbox"
+          checked={mirror}
+          onChange={(e) => changeMirror(e.target.checked)}
+          disabled={busy !== 'idle' || plan !== null || !mirrorLoaded}
+        />
+        <label htmlFor="pgh-mirror">
+          Make Overleaf match GitHub exactly
+          <div className="hint">
+            Also deletes files that aren&apos;t on GitHub and replaces
+            uploaded files that differ. You&apos;ll see the list and type{' '}
+            <strong>delete</strong> to confirm. Deleted files can be
+            restored from Overleaf&apos;s History.
           </div>
         </label>
       </div>
@@ -1319,16 +1573,18 @@ function PullFromGitHubDevPanel({
       <div className="actions" style={{ marginTop: 8 }}>
         <button
           type="button"
-          className="button primary"
-          onClick={onPull}
-          disabled={busy !== 'idle' || !selectedProjectId}
-          aria-busy={busy === 'pulling'}
+          className={mirror ? 'button danger' : 'button primary'}
+          onClick={onPreview}
+          disabled={busy !== 'idle' || plan !== null || !selectedProjectId || !mirrorLoaded}
+          aria-busy={busy !== 'idle'}
         >
-          {busy === 'pulling' ? (
+          {busy !== 'idle' ? (
             <>
               <span className="spinner" aria-hidden="true" />
-              {phase || 'Pulling…'}
+              {phase || (busy === 'planning' ? 'Checking what would change…' : 'Pulling…')}
             </>
+          ) : mirror ? (
+            'Pull and match GitHub'
           ) : (
             'Pull from GitHub into Overleaf'
           )}
@@ -1338,58 +1594,178 @@ function PullFromGitHubDevPanel({
       {error && (
         <div className="banner error" role="alert" style={{ marginTop: 10 }}>
           {error}
-          {errorRecovery && <div style={{ marginTop: 6 }}>Recovery: {errorRecovery}</div>}
+          {errorRecovery && <div style={{ marginTop: 6 }}>What to try: {errorRecovery}</div>}
         </div>
       )}
 
       {commitSha && (
         <div className="hint" style={{ marginTop: 10 }}>
-          GitHub HEAD: <code>{commitSha.substring(0, 7)}</code>
+          GitHub version: <code>{commitSha.substring(0, 7)}</code>
+        </div>
+      )}
+
+      {plan && previewText && (
+        <div style={{ marginTop: 10 }}>
+          {previewText.nothingToPull && (
+            <div
+              className={`banner ${plan.notPulled.length === 0 ? 'success' : 'info'}`}
+              role="status"
+            >
+              {previewText.nothingToPull}
+            </div>
+          )}
+          {previewText.replace && (
+            <div className="banner info" role="alert">
+              {previewText.replace}
+              <PullPreviewList
+                items={plan.replace.map((r) => ({ path: r.path, note: describeLineChange(r) }))}
+              />
+            </div>
+          )}
+          {previewText.create && (
+            <PullPreviewList
+              summary={previewText.create}
+              items={plan.create.map((c) => ({ path: c.path, note: describeCreateNote(c) }))}
+            />
+          )}
+          {previewText.upload && (
+            <PullPreviewList
+              summary={previewText.upload}
+              items={plan.upload.map((f) => ({ path: f.path }))}
+            />
+          )}
+          {previewText.mirror?.replaceFilesTitle && plan.mirror && (
+            <div className="banner info" role="alert">
+              {previewText.mirror.replaceFilesNote}
+              <PullPreviewList
+                summary={previewText.mirror.replaceFilesTitle}
+                items={plan.mirror.replaceFiles.map((f) => ({
+                  path: f.path,
+                  note: describeFileReplaceNote(f),
+                }))}
+                open
+              />
+            </div>
+          )}
+          {previewText.mirror?.largeDeletionWarning && (
+            <div className="banner error" role="alert">
+              <strong>{previewText.mirror.largeDeletionWarning}</strong>
+            </div>
+          )}
+          {previewText.mirror?.rootDocWarning && (
+            <div className="banner error" role="alert">
+              <strong>{previewText.mirror.rootDocWarning}</strong>
+            </div>
+          )}
+          {previewText.mirror?.deleteTitle && plan.mirror && (
+            <div className="banner info" role="alert">
+              {previewText.mirror.deleteNote}
+              <PullPreviewList
+                summary={previewText.mirror.deleteTitle}
+                items={plan.mirror.deletions
+                  .filter((d) => d.kind !== 'folder')
+                  .map((d) => ({ path: d.path }))}
+                open
+              />
+              {previewText.mirror.deleteFolders && (
+                <PullPreviewList
+                  summary={previewText.mirror.deleteFolders}
+                  items={plan.mirror.deletions
+                    .filter((d) => d.kind === 'folder')
+                    .map((d) => ({ path: `${d.path}/` }))}
+                />
+              )}
+            </div>
+          )}
+          {!previewText.mirror?.deleteTitle && previewText.mirror?.deleteFolders && plan.mirror && (
+            <PullPreviewList
+              summary={previewText.mirror.deleteFolders}
+              items={plan.mirror.deletions
+                .filter((d) => d.kind === 'folder')
+                .map((d) => ({ path: `${d.path}/` }))}
+            />
+          )}
+          {previewText.mirror?.kept.map((group) => (
+            <PullPreviewList
+              key={group.source}
+              summary={group.summary}
+              items={group.paths.map((path) => ({ path }))}
+            />
+          ))}
+          {previewText.mirror?.notDeleted && plan.mirror && (
+            <PullPreviewList
+              summary={previewText.mirror.notDeleted}
+              items={plan.mirror.notDeleted.map((n) => ({ path: n.path, note: n.reason }))}
+            />
+          )}
+          {previewText.upToDate && (
+            <div className="hint" style={{ marginTop: 8 }}>
+              {previewText.upToDate}
+            </div>
+          )}
+          {previewText.notPulled && (
+            <PullPreviewList
+              summary={previewText.notPulled}
+              items={plan.notPulled.map((s) => ({ path: s.path, note: s.reason }))}
+            />
+          )}
+
+          {previewText.nothingToPull ? (
+            <div className="actions" style={{ marginTop: 10 }}>
+              <button type="button" className="button" onClick={onDiscard}>
+                OK
+              </button>
+            </div>
+          ) : (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (canConfirm) void onApply();
+              }}
+              style={{ marginTop: 10 }}
+            >
+              {confirmationWord !== null && (
+                <div className="field">
+                  <label htmlFor="pgh-confirm-word">
+                    To confirm, type <strong>{confirmationWord}</strong>
+                  </label>
+                  <input
+                    id="pgh-confirm-word"
+                    type="text"
+                    value={typedConfirmation}
+                    onChange={(e) => setTypedConfirmation(e.target.value)}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </div>
+              )}
+              <div className="actions">
+                <button type="submit" className="button primary" disabled={!canConfirm}>
+                  {previewText.confirmLabel}
+                </button>
+                <button type="button" className="button" onClick={onDiscard}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
         </div>
       )}
 
       {summary && (
         <div
-          className={`banner ${summary.failed + summary.conflict + summary.createFailed + summary.uploadFailed === 0 ? 'success' : 'info'}`}
+          className={`banner ${anyProblem ? 'info' : 'success'}`}
           role="status"
           style={{ marginTop: 10 }}
         >
-          <strong>Summary:</strong> {summary.written} written, {summary.skipped} skipped, {summary.conflict} conflict, {summary.failed} failed
-          {(summary.created > 0 ||
-            summary.createFailed > 0 ||
-            summary.createSkipped > 0) && (
-            <>
-              , {summary.created} created, {summary.createFailed} create-failed
-              {summary.createSkipped > 0 && <>, {summary.createSkipped} create-skipped</>}
-            </>
-          )}
-          {(summary.uploaded > 0 ||
-            summary.uploadFailed > 0 ||
-            summary.uploadSkipped > 0) && (
-            <>
-              , {summary.uploaded} uploaded, {summary.uploadFailed} upload-failed
-              {summary.uploadSkipped > 0 && <>, {summary.uploadSkipped} upload-skipped</>}
-            </>
-          )}
-          {noOverleafDocs.length > 0 && !createResults && (
-            <>, {noOverleafDocs.length} file(s) not present in Overleaf</>
-          )}
-          {binaryItems.length > 0 && (
-            <>, {binaryItems.length} binary file(s) in GitHub not pulled</>
-          )}
-          {extFilteredItems.length > 0 && (
-            <>
-              , {extFilteredItems.length} file(s) skipped (extension not in
-              allowed write-back list)
-            </>
-          )}
+          <strong>Summary:</strong> {summary}
         </div>
       )}
 
       {results && results.length > 0 && (
         <div style={{ marginTop: 10 }}>
           <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
-            Write results
+            Text files already in Overleaf
           </div>
           {results.map((r, i) => (
             <div
@@ -1404,8 +1780,8 @@ function PullFromGitHubDevPanel({
               role={r.status === 'written' ? 'status' : 'alert'}
               style={{ marginTop: 6, fontSize: 12 }}
             >
-              <strong>{r.status}</strong> — <code>{r.path}</code>
-              {r.message ? `: ${r.message}` : ''}
+              <strong>{pullResultLabel('doc', r.status)}</strong> — <code>{r.path}</code>
+              {rowMessage('doc', r)}
             </div>
           ))}
         </div>
@@ -1414,7 +1790,7 @@ function PullFromGitHubDevPanel({
       {createResults && createResults.length > 0 && (
         <div style={{ marginTop: 10 }}>
           <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
-            Create results
+            New text files
           </div>
           {createResults.map((r, i) => (
             <div
@@ -1429,8 +1805,8 @@ function PullFromGitHubDevPanel({
               role={r.status === 'created' ? 'status' : 'alert'}
               style={{ marginTop: 6, fontSize: 12 }}
             >
-              <strong>{r.status}</strong> — <code>{r.path}</code>
-              {r.message ? `: ${r.message}` : ''}
+              <strong>{pullResultLabel('create', r.status)}</strong> — <code>{r.path}</code>
+              {rowMessage('create', r)}
             </div>
           ))}
         </div>
@@ -1439,7 +1815,7 @@ function PullFromGitHubDevPanel({
       {binaryResults && binaryResults.length > 0 && (
         <div style={{ marginTop: 10 }}>
           <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
-            Binary upload results
+            Images, PDFs and other non-text files
           </div>
           {binaryResults.map((r, i) => (
             <div
@@ -1454,30 +1830,74 @@ function PullFromGitHubDevPanel({
               role={r.status === 'uploaded' ? 'status' : 'alert'}
               style={{ marginTop: 6, fontSize: 12 }}
             >
-              <strong>{r.status}</strong> — <code>{r.path}</code>
-              {r.message ? `: ${r.message}` : ''}
+              <strong>{pullResultLabel('upload', r.status)}</strong> — <code>{r.path}</code>
+              {rowMessage('upload', r)}
             </div>
           ))}
         </div>
       )}
 
-      {(noOverleafDocs.length > 0 || sourceSkipped.length > 0) && (
+      {fileReplaceResults && fileReplaceResults.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
+            Uploaded files replaced with the GitHub version
+          </div>
+          {fileReplaceResults.map((r, i) => (
+            <div
+              key={i}
+              className={`banner ${
+                r.status === 'replaced' ? 'success' : r.status === 'failed' ? 'error' : 'info'
+              }`}
+              role={r.status === 'replaced' ? 'status' : 'alert'}
+              style={{ marginTop: 6, fontSize: 12 }}
+            >
+              <strong>{pullResultLabel('replaceFile', r.status)}</strong> — <code>{r.path}</code>
+              {rowMessage('replaceFile', r)}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {deleteResults && deleteResults.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
+            Files deleted from Overleaf
+          </div>
+          {deleteResults.map((r, i) => (
+            <div
+              key={i}
+              className={`banner ${
+                r.status === 'deleted' ? 'success' : r.status === 'failed' ? 'error' : 'info'
+              }`}
+              role={r.status === 'deleted' ? 'status' : 'alert'}
+              style={{ marginTop: 6, fontSize: 12 }}
+            >
+              <strong>{pullResultLabel('delete', r.status)}</strong> —{' '}
+              <code>{r.kind === 'folder' ? `${r.path}/` : r.path}</code>
+              {rowMessage('delete', r)}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!plan && (notInOverleaf.length > 0 || sourceSkipped.length > 0) && (
         <details style={{ marginTop: 10 }}>
           <summary style={{ cursor: 'pointer', fontSize: 12 }}>
             Show files not pulled (
-            {noOverleafDocs.length + sourceSkipped.length})
+            {notInOverleaf.length + sourceSkipped.length})
           </summary>
           <ul style={{ marginTop: 6, fontSize: 12 }}>
-            {noOverleafDocs.map((p) => (
+            {notInOverleaf.map((p) => (
               <li key={`no-${p}`}>
-                <code>{p}</code> — not present in Overleaf (would need
-                file-creation, not yet supported)
+                <code>{p}</code> — not in Overleaf yet (tick{' '}
+                <em>Also create new files in Overleaf</em>)
               </li>
             ))}
             {binaryItems.map((s) => (
               <li key={`bin-${s.path}`}>
-                <code>{s.path}</code> — binary or unknown extension
-                (text-only in this build)
+                <code>{s.path}</code> — not a known text file type (turn on{' '}
+                <em>Allow uploading new images and other non-text files</em>{' '}
+                to upload new ones)
               </li>
             ))}
             {extFilteredItems.map((s) => (
@@ -1487,10 +1907,61 @@ function PullFromGitHubDevPanel({
                 extensions</em> above to include)
               </li>
             ))}
+            {linkItems.map((s) => (
+              <li key={`link-${s.path}`}>
+                <code>{s.path}</code> — a symbolic link on GitHub, which
+                Overleaf can&apos;t hold
+              </li>
+            ))}
           </ul>
         </details>
       )}
     </div>
+  );
+}
+
+// ": message" after a result row's label, without repeating the label.
+function rowMessage(
+  kind: 'doc' | 'create' | 'upload' | 'replaceFile' | 'delete',
+  r: WriteBackResult | CreateResult | BinaryResult | FileReplaceResult | DeleteResult,
+): string {
+  const message = pullRowMessage(pullResultLabel(kind, r.status), r.message);
+  return message ? `: ${message}` : '';
+}
+
+// Files listed in the pull preview. With a summary line the list starts
+// collapsed under it; without one it is shown, collapsed only when long.
+const PREVIEW_LIST_SHOWN_MAX = 8;
+
+function PullPreviewList({
+  summary,
+  items,
+  open,
+}: {
+  summary?: string;
+  items: Array<{ path: string; note?: string }>;
+  // Start expanded: used for the files a pull deletes or replaces, which the
+  // user should read before confirming.
+  open?: boolean;
+}): React.ReactElement {
+  const list = (
+    <ul style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 12, overflowWrap: 'anywhere' }}>
+      {items.map((item) => (
+        <li key={item.path}>
+          <code>{item.path}</code>
+          {item.note ? <> — {item.note}</> : null}
+        </li>
+      ))}
+    </ul>
+  );
+  if (!summary && items.length <= PREVIEW_LIST_SHOWN_MAX) return list;
+  return (
+    <details style={{ marginTop: 8 }} open={open}>
+      <summary style={{ cursor: 'pointer', fontSize: 12 }}>
+        {summary ?? `Show all ${items.length} files`}
+      </summary>
+      {list}
+    </details>
   );
 }
 
@@ -1514,7 +1985,7 @@ function TestResultView({ result }: { result: ConnectionTestResult }): React.Rea
           {result.defaultBranch && (
             <>
               <span className="label" style={{ marginLeft: 6 }}>
-                default
+                default branch
               </span>
               <code>{result.defaultBranch}</code>
             </>

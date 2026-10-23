@@ -27,6 +27,13 @@ export const BRIDGE_VERSION = 1 as const;
 // before relying on sessions.
 export const BRIDGE_FEATURE_SESSIONS = 'project-session-v1';
 
+// Advertised by a content script that also understands the messages of
+// "Make Overleaf match GitHub exactly" (LIVE_SESSION_HASH_FILES,
+// LIVE_SESSION_REPLACE_FILE, LIVE_SESSION_DELETE_ENTITY). A tab with a
+// content script from an earlier version keeps it until it is reloaded, so
+// that pull option checks this flag before it plans anything.
+export const BRIDGE_FEATURE_MIRROR = 'mirror-v1';
+
 export type BridgeRequest =
   | {
       type: 'LIVE_PING';
@@ -125,6 +132,45 @@ export type BridgeRequest =
       path: string;
       contentBase64: string;
     }
+  // "Make Overleaf match GitHub exactly" (pull option, off by default). The
+  // popup sends these only for a confirmed plan; each one re-checks Overleaf
+  // before changing anything (see replaceUploadedFileInSession and
+  // deleteEntityInSession in liveBridgeHandler.ts).
+  | {
+      // Read-only: SHA-256 and size of uploaded files, fetched from Overleaf.
+      type: 'LIVE_SESSION_HASH_FILES';
+      version: typeof BRIDGE_VERSION;
+      projectId: string;
+      sessionId: string;
+      fileIds: string[];
+    }
+  | {
+      // Replaces an uploaded file by uploading new bytes over it.
+      type: 'LIVE_SESSION_REPLACE_FILE';
+      version: typeof BRIDGE_VERSION;
+      projectId: string;
+      sessionId: string;
+      path: string;
+      // The file ID the plan saw at `path`, and the SHA-256 of the bytes it
+      // read then. Both must still hold right before the upload.
+      fileId: string;
+      expectedSha256: string;
+      contentBase64: string;
+    }
+  | {
+      // Deletes one doc, uploaded file or (empty) folder.
+      type: 'LIVE_SESSION_DELETE_ENTITY';
+      version: typeof BRIDGE_VERSION;
+      projectId: string;
+      sessionId: string;
+      kind: 'doc' | 'file' | 'folder';
+      path: string;
+      // The entity ID the plan saw at `path`.
+      entityId: string;
+      // Docs only: SHA-256 (UTF-8 bytes) of the text the plan read. The doc
+      // is read again and must still match.
+      expectedSha256?: string;
+    }
   | {
       type: 'LIVE_SESSION_CLOSE';
       version: typeof BRIDGE_VERSION;
@@ -212,6 +258,9 @@ export type LiveSessionOpenResponseData = {
   sessionId: string;
   rootFolder: LiveProjectFolder[];
   name?: string;
+  // ID of the project's main document (joinProject's rootDoc_id), when it
+  // has one. Older content scripts leave it out.
+  rootDocId?: string;
 };
 
 export type LiveSessionDocRead =
@@ -220,6 +269,37 @@ export type LiveSessionDocRead =
 
 export type LiveSessionReadDocsResponseData = {
   docs: LiveSessionDocRead[];
+};
+
+export type LiveSessionFileHash =
+  | { fileId: string; ok: true; sha256: string; sizeBytes: number }
+  | { fileId: string; ok: false; code: LiveSyncErrorCode; message: string };
+
+export type LiveSessionHashFilesResponseData = {
+  files: LiveSessionFileHash[];
+};
+
+export type LiveReplaceFileResponseData = {
+  // The ID Overleaf gave the replacement (a replaced file gets a new one).
+  fileId: string;
+  path: string;
+  sizeBytes: number;
+  // Overleaf made the replacement an editable text file instead of an
+  // uploaded file (its own rule for the name and content).
+  becameDoc?: boolean;
+  // A repeat of a request this session had already carried out (the popup
+  // sends a request again when the first reply never arrived): the check
+  // found the replacement in place with the sent bytes, and nothing was
+  // uploaded this time.
+  alreadyDone?: boolean;
+};
+
+export type LiveDeleteEntityResponseData = {
+  path: string;
+  kind: 'doc' | 'file' | 'folder';
+  // A repeat of a delete this session had already carried out: the entity was
+  // gone, and nothing was deleted this time.
+  alreadyDone?: boolean;
 };
 
 export type LiveSessionCloseResponseData = {

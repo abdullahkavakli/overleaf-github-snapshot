@@ -93,10 +93,13 @@ export async function removeProjectLink(projectId: string): Promise<void> {
   if (!(projectId in map)) return;
   delete map[projectId];
   await chromeStorageSet({ [STORAGE_KEYS.PROJECT_LINKS]: map });
+  // The project is no longer linked, so its remembered pull option goes too.
+  await setMirrorMatchEnabled(projectId, false);
 }
 
 export async function clearProjectLinks(): Promise<void> {
   await chromeStorageRemove(STORAGE_KEYS.PROJECT_LINKS);
+  await clearMirrorMatchSettings();
 }
 
 // Reads the pre-0.5.0 single repo config + token so the popup can pre-fill the
@@ -146,9 +149,16 @@ export async function getExperimentalConfig(): Promise<ExperimentalConfig> {
   );
   const stored = result[STORAGE_KEYS.EXPERIMENTAL_CONFIG];
   if (!stored) return { ...DEFAULT_EXPERIMENTAL_CONFIG };
+  // "Make Overleaf match GitHub exactly" used to be one global flag here. It
+  // is per project now (getMirrorMatchEnabled), and a stored global flag is
+  // dropped rather than carried over, so nothing starts out ticked.
+  const { makeOverleafMatchGitHub: _legacyMirror, ...rest } = stored as Partial<ExperimentalConfig> & {
+    makeOverleafMatchGitHub?: unknown;
+  };
   return {
     ...DEFAULT_EXPERIMENTAL_CONFIG,
-    ...stored,
+    ...rest,
+    includeAllFileTypes: stored.includeAllFileTypes === true,
     allowedWriteBackExtensions: sanitizeExtensions(stored.allowedWriteBackExtensions),
   };
 }
@@ -161,13 +171,53 @@ export async function clearExperimentalConfig(): Promise<void> {
   await chromeStorageRemove(STORAGE_KEYS.EXPERIMENTAL_CONFIG);
 }
 
+// "Make Overleaf match GitHub exactly" is remembered per Overleaf project: a
+// map of the project IDs that have it ticked. A project that isn't in it
+// (every project on a fresh install) has it off.
+async function getMirrorMatchProjects(): Promise<Record<string, true>> {
+  const result = await chromeStorageGet<unknown>(STORAGE_KEYS.MIRROR_PROJECTS);
+  const stored = result[STORAGE_KEYS.MIRROR_PROJECTS];
+  const out: Record<string, true> = {};
+  if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
+    for (const [projectId, value] of Object.entries(stored)) {
+      if (value === true) out[projectId] = true;
+    }
+  }
+  return out;
+}
+
+export async function getMirrorMatchEnabled(projectId: string): Promise<boolean> {
+  if (!projectId) return false;
+  return (await getMirrorMatchProjects())[projectId] === true;
+}
+
+export async function setMirrorMatchEnabled(projectId: string, enabled: boolean): Promise<void> {
+  if (!projectId) return;
+  // Read just before writing, so a project ticked in another window meanwhile
+  // is not overwritten.
+  const map = await getMirrorMatchProjects();
+  if (enabled) map[projectId] = true;
+  else if (projectId in map) delete map[projectId];
+  else return;
+  await chromeStorageSet({ [STORAGE_KEYS.MIRROR_PROJECTS]: map });
+}
+
+export async function clearMirrorMatchSettings(): Promise<void> {
+  await chromeStorageRemove(STORAGE_KEYS.MIRROR_PROJECTS);
+}
+
 export async function getUIPreferences(): Promise<UIPreferences> {
   const result = await chromeStorageGet<Partial<UIPreferences>>(
     STORAGE_KEYS.UI_PREFERENCES,
   );
   const stored = result[STORAGE_KEYS.UI_PREFERENCES];
   if (!stored) return { ...DEFAULT_UI_PREFERENCES };
-  return { ...DEFAULT_UI_PREFERENCES, ...stored };
+  // Stored values are coerced: a missing key (a user who saved their
+  // preferences before manualZipUploadEnabled existed) is off.
+  return {
+    manualZipUploadEnabled: stored.manualZipUploadEnabled === true,
+    alwaysShowManualUpload: stored.alwaysShowManualUpload === true,
+  };
 }
 
 export async function setUIPreferences(prefs: UIPreferences): Promise<void> {

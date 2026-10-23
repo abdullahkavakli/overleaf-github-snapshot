@@ -12,10 +12,11 @@
 // that case — we surface the conflict and require manual resolution.
 
 import { computeSha256 } from '../../diff/fileHasher';
+import { toOverleafStorableText } from '../../shared/lineEndings';
 
 export type ConflictStatus =
   | 'safe' // remote === base, write may proceed
-  | 'unchanged' // local === base, nothing to write
+  | 'unchanged' // local === base (ignoring line endings and characters Overleaf can't store), nothing to write
   | 'conflict'; // remote !== base AND local !== remote
 
 export type ConflictCheckResult = {
@@ -41,7 +42,14 @@ export async function checkWriteBackConflict(
     computeSha256(enc.encode(localText)),
   ]);
 
-  if (localSha === baseSha) {
+  // "Nothing to write" compares what Overleaf would hold: it keeps no CR and
+  // turns each half of an emoji into U+FFFD, so a local text that differs
+  // from base only in "\r" or in such characters has no change to send.
+  // The remote-vs-base comparison below stays byte-exact on purpose. Both
+  // come from Overleaf, so any difference at all means the doc moved, and
+  // being stricter than necessary there can only cause a refused write,
+  // never an overwrite.
+  if (localSha === baseSha || toOverleafStorableText(localText) === toOverleafStorableText(baseText)) {
     return {
       path,
       status: 'unchanged',
@@ -59,8 +67,7 @@ export async function checkWriteBackConflict(
       baseSha256: baseSha,
       remoteSha256: remoteSha,
       localSha256: localSha,
-      reason:
-        'Overleaf has a different version of this file than the snapshot the diff was computed from.',
+      reason: 'This file changed in Overleaf after it was read, so it was not overwritten.',
     };
   }
 

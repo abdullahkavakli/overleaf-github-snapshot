@@ -30,6 +30,10 @@ export type PreviewBase = {
   treeSha: string;
 };
 
+function branchMovedMessage(branch: string): string {
+  return `${branch} on GitHub has new commits since this preview. Nothing was committed. Click Start over, then fetch the project again.`;
+}
+
 export class CommitError extends Error {
   constructor(message: string) {
     super(message);
@@ -86,9 +90,7 @@ export async function createCommit(
     // Someone pushed to this branch between the preview render and now.
     // Bail before doing any blob/tree/commit work — the diff the user saw
     // no longer applies to the current branch tip.
-    throw new CommitError(
-      'GitHub branch changed since preview. Refresh the diff and try again.',
-    );
+    throw new CommitError(branchMovedMessage(branch));
   }
   // The ref is still on the preview's base commit, so its tree SHA is
   // exactly previewBase.treeSha — no need to refetch the commit object.
@@ -162,9 +164,17 @@ export async function createCommit(
   try {
     await client.updateRef(owner, repo, branch, newCommit.sha, false);
   } catch (e) {
+    // A non-forced update that is not a fast-forward comes back as 409 or as
+    // 422 "Update is not a fast forward". Any other 422 is a refusal, e.g. a
+    // protected branch or a ruleset, and trying again would not help.
     if (e instanceof GitHubApiError && (e.status === 409 || e.status === 422)) {
+      const reason = (e.parsedBody as { message?: unknown } | null)?.message;
+      const text = typeof reason === 'string' ? reason : '';
+      if (e.status === 409 || /fast.?forward/i.test(text)) {
+        throw new CommitError(branchMovedMessage(branch));
+      }
       throw new CommitError(
-        'GitHub branch changed since preview. Refresh the diff and try again.',
+        `GitHub refused to update ${branch}. Nothing was committed. The branch may be protected or have rules that block direct commits; change them on GitHub or link the project to another branch.${text ? ` Details: ${text.replace(/\.$/, '')}.` : ''}`,
       );
     }
     throw e;

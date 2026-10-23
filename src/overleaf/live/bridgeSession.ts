@@ -9,14 +9,19 @@
 
 import { chunk } from '../../shared/concurrency';
 import {
+  BRIDGE_FEATURE_MIRROR,
   BRIDGE_FEATURE_SESSIONS,
   BRIDGE_VERSION,
   type BridgeFailure,
   type BridgeRequest,
   type BridgeResponse,
   type LiveCreateDocResponseData,
+  type LiveDeleteEntityResponseData,
   type LivePingResponseData,
+  type LiveReplaceFileResponseData,
   type LiveSessionDocRead,
+  type LiveSessionFileHash,
+  type LiveSessionHashFilesResponseData,
   type LiveSessionOpenResponseData,
   type LiveSessionReadDocsResponseData,
   type LiveUploadBinaryResponseData,
@@ -25,7 +30,7 @@ import {
 import { findOverleafTab, sendBridgeRequest } from './liveSyncManager';
 import type { DocSnapshot } from './overleafDocumentClient';
 import { diffToOps } from './overleafOt';
-import { LiveSyncError, type LiveProjectFolder, type LiveSyncErrorCode } from './types';
+import { LiveSyncError, asDetail, type LiveProjectFolder, type LiveSyncErrorCode } from './types';
 
 const PING_TIMEOUT_MS = 5_000;
 // Connect + joinProject, each with its own timeout in the content script.
@@ -45,6 +50,16 @@ const UPLOAD_BASE_TIMEOUT_MS = 90_000;
 const UPLOAD_BASE64_CHARS_PER_SECOND = 64 * 1024;
 // Reopen a lost session (Overleaf tab reloaded mid-run) at most this often.
 const MAX_REOPENS = 2;
+// "Make Overleaf match GitHub exactly". Uploaded files fetched per
+// LIVE_SESSION_HASH_FILES message (the content script fetches a few at a
+// time and the whole batch must fit the timeout below).
+const HASH_FILES_BATCH_SIZE = 8;
+const HASH_FILES_TIMEOUT_MS = 60_000 + HASH_FILES_BATCH_SIZE * 30_000;
+// A replacement or deletion first re-reads the project tree (a join, up to
+// 45 s), checks Overleaf's listing and re-reads the doc or file (30 s each)
+// before its request, so these sit well above the plain upload's.
+const DELETE_TIMEOUT_MS = 180_000;
+const REPLACE_FILE_EXTRA_TIMEOUT_MS = 120_000;
 
 function readBatchTimeoutMs(docCount: number): number {
   return 45_000 + docCount * 10_000;
@@ -69,19 +84,19 @@ const NOT_ATTEMPTED_MESSAGE =
   'Not attempted: the connection to the Overleaf tab was lost. Run the pull again.';
 
 const OUTDATED_BRIDGE_MESSAGE =
-  "Reload the Overleaf tab, then run the pull again. The tab is still running this extension's previous page script, which cannot run the pull. Nothing was written.";
+  'This Overleaf tab was opened before the extension was updated, so the pull cannot run there yet. Nothing was written.';
+const OUTDATED_MIRROR_MESSAGE =
+  'This Overleaf tab was opened before the extension was updated, so “Make Overleaf match GitHub exactly” cannot run there yet. Nothing was changed.';
 
 const UNREACHABLE_TAB_MESSAGE =
   'The Overleaf tab could not be reached; it may have been closed or reloaded.';
 const UNREACHABLE_TAB_RECOVERY = 'Reload the Overleaf tab, then run the pull again.';
 
-// sendBridgeRequest words its own failures for logs ("Live bridge did not
-// respond within 45000ms.", "Live bridge not reachable and on-demand
-// injection failed: No tab with id: 7"), and the pull shows them to the
-// user, so they are reworded here. Only its timer reports 'network'. It
-// also returns every 'protocol_unavailable' itself: a content-script one
-// (no CSRF token on the page) makes it inject and retry, and ends as its
-// own "not reachable" failure.
+// sendBridgeRequest's own failures are reworded here for the pull's
+// result rows. Only its timer reports 'network', and every
+// 'protocol_unavailable' is its own (the tab could not be reached even
+// after injecting the content script). A project page the content script
+// cannot use comes back as 'page_not_recognized', which is not retried.
 async function send<T>(
   tabId: number,
   request: BridgeRequest,
@@ -122,6 +137,8 @@ export class OverleafBridgeSession {
     private readonly tabId: number,
     private sessionId: string,
     private tree: LiveProjectFolder[],
+    private readonly features: readonly string[],
+    private mainDocId: string | undefined,
   ) {}
 
   // Opens a session on the project's Overleaf tab. Throws a LiveSyncError,
@@ -153,15 +170,15 @@ export class OverleafBridgeSession {
     if (!ping.ok) {
       throw new LiveSyncError(
         ping.code,
-        "Reload the Overleaf tab, then run the pull again: the extension's page script there is not responding. Nothing was written.",
+        `The extension couldn't talk to the Overleaf tab, so nothing was written. Details: ${asDetail(ping.message)}.`,
         UNREACHABLE_TAB_RECOVERY,
       );
     }
     if (!ping.data.onProjectPage) {
       throw new LiveSyncError(
         'project_join_failed',
-        'The Overleaf tab is not currently on a project URL.',
-        'Open the project (https://www.overleaf.com/project/...) and try again.',
+        'The Overleaf tab is not showing a project.',
+        'Open the project in that tab, then try again.',
       );
     }
     if (!ping.data.features?.includes(BRIDGE_FEATURE_SESSIONS)) {
@@ -181,12 +198,33 @@ export class OverleafBridgeSession {
       tabId,
       opened.data.sessionId,
       opened.data.rootFolder,
+      ping.data.features ?? [],
+      opened.data.rootDocId,
     );
+  }
+
+  // Throws 'bridge_outdated', before anything is changed, unless the tab's
+  // content script handles the messages of "Make Overleaf match GitHub
+  // exactly" (see BRIDGE_FEATURE_MIRROR).
+  requireMirrorSupport(): void {
+    if (!this.features.includes(BRIDGE_FEATURE_MIRROR)) {
+      throw new LiveSyncError(
+        'bridge_outdated',
+        OUTDATED_MIRROR_MESSAGE,
+        'Reload the Overleaf tab, then run the pull again.',
+      );
+    }
   }
 
   // Project tree from the session's joinProject.
   get rootFolder(): LiveProjectFolder[] {
     return this.tree;
+  }
+
+  // ID of the project's main document, when the Overleaf tab reported one
+  // (an older content script doesn't).
+  get rootDocId(): string | undefined {
+    return this.mainDocId;
   }
 
   private async call<T>(
@@ -216,6 +254,7 @@ export class OverleafBridgeSession {
       if (reopened.ok) {
         this.sessionId = reopened.data.sessionId;
         this.tree = reopened.data.rootFolder;
+        this.mainDocId = reopened.data.rootDocId;
         response = await send<T>(this.tabId, build(this.sessionId), timeoutMs);
       } else {
         response = reopened;
@@ -258,7 +297,7 @@ export class OverleafBridgeSession {
             docId,
             ok: false,
             code: 'document_join_failed',
-            message: 'The Overleaf tab sent no result for this doc.',
+            message: 'The Overleaf tab sent no result for this file.',
           });
         }
       }
@@ -274,7 +313,7 @@ export class OverleafBridgeSession {
     if (!read || !read.ok) {
       throw new LiveSyncError(
         read?.code ?? 'document_join_failed',
-        read?.message ?? 'Document read returned nothing.',
+        read?.message ?? 'The Overleaf tab sent no result for this file.',
       );
     }
     return { docId, version: read.version, lines: read.text.split('\n'), text: read.text };
@@ -345,6 +384,95 @@ export class OverleafBridgeSession {
         contentBase64,
       }),
       uploadTimeoutMs(contentBase64.length),
+    );
+  }
+
+  // SHA-256 and size of uploaded files, read from Overleaf (read-only).
+  // Per-file failures come back as `ok: false` entries; a failure of a whole
+  // batch throws, because it means the bridge itself is in trouble.
+  async hashFiles(
+    fileIds: string[],
+    onProgress?: (done: number, total: number) => void,
+  ): Promise<Map<string, LiveSessionFileHash>> {
+    const unique = Array.from(new Set(fileIds));
+    const out = new Map<string, LiveSessionFileHash>();
+    let done = 0;
+    for (const batch of chunk(unique, HASH_FILES_BATCH_SIZE)) {
+      const response = await this.call<LiveSessionHashFilesResponseData>(
+        (sessionId) => ({
+          type: 'LIVE_SESSION_HASH_FILES',
+          version: BRIDGE_VERSION,
+          projectId: this.projectId,
+          sessionId,
+          fileIds: batch,
+        }),
+        HASH_FILES_TIMEOUT_MS,
+      );
+      if (!response.ok) {
+        throw new LiveSyncError(response.code, response.message, response.recovery);
+      }
+      for (const file of response.data.files) out.set(file.fileId, file);
+      for (const fileId of batch) {
+        if (!out.has(fileId)) {
+          out.set(fileId, {
+            fileId,
+            ok: false,
+            code: 'unknown',
+            message: 'The Overleaf tab sent no result for this file.',
+          });
+        }
+      }
+      done += batch.length;
+      onProgress?.(done, unique.length);
+    }
+    return out;
+  }
+
+  // Replaces an uploaded file with new bytes. The content script refuses
+  // unless the path still holds `fileId` with bytes matching
+  // `expectedSha256` (what the plan read).
+  replaceUploadedFile(
+    path: string,
+    fileId: string,
+    expectedSha256: string,
+    contentBase64: string,
+  ): Promise<BridgeResponse<LiveReplaceFileResponseData>> {
+    return this.call<LiveReplaceFileResponseData>(
+      (sessionId) => ({
+        type: 'LIVE_SESSION_REPLACE_FILE',
+        version: BRIDGE_VERSION,
+        projectId: this.projectId,
+        sessionId,
+        path,
+        fileId,
+        expectedSha256,
+        contentBase64,
+      }),
+      uploadTimeoutMs(contentBase64.length) + REPLACE_FILE_EXTRA_TIMEOUT_MS,
+    );
+  }
+
+  // Deletes one doc, uploaded file or empty folder. The content script
+  // refuses unless the entity at `path` still has the planned ID (and, for a
+  // doc, the planned text).
+  deleteEntity(
+    kind: 'doc' | 'file' | 'folder',
+    path: string,
+    entityId: string,
+    expectedSha256?: string,
+  ): Promise<BridgeResponse<LiveDeleteEntityResponseData>> {
+    return this.call<LiveDeleteEntityResponseData>(
+      (sessionId) => ({
+        type: 'LIVE_SESSION_DELETE_ENTITY',
+        version: BRIDGE_VERSION,
+        projectId: this.projectId,
+        sessionId,
+        kind,
+        path,
+        entityId,
+        ...(expectedSha256 !== undefined ? { expectedSha256 } : {}),
+      }),
+      DELETE_TIMEOUT_MS,
     );
   }
 

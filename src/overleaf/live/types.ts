@@ -38,6 +38,10 @@ export type LiveSyncErrorCode =
   // The operation was never sent: an earlier one in the same run lost the
   // connection to the Overleaf tab (bridgeSession.ts).
   | 'not_attempted'
+  // The Overleaf project page lacks what the extension reads from it (the
+  // ol-csrfToken meta tag). Not retried: re-injecting the content script
+  // reads the same page.
+  | 'page_not_recognized'
   | 'unknown';
 
 export class LiveSyncError extends Error {
@@ -52,6 +56,13 @@ export class LiveSyncError extends Error {
   }
 }
 
+// A full message reused after "Details:": its own "Details:" part goes in
+// parentheses and the final period is dropped, so details never nest.
+export function asDetail(message: string): string {
+  const m = /^(.*?)\.?\s*Details: (.*?)\.?$/s.exec(message);
+  return (m ? `${m[1]} (${m[2]})` : message).replace(/\.$/, '');
+}
+
 export function recoveryActionForLiveSyncError(code: LiveSyncErrorCode): string {
   switch (code) {
     case 'live_sync_disabled':
@@ -61,17 +72,17 @@ export function recoveryActionForLiveSyncError(code: LiveSyncErrorCode): string 
     case 'project_join_failed':
     case 'document_join_failed':
     case 'document_version_unknown':
-      return 'Use the ZIP snapshot route instead, or refresh the Overleaf tab.';
+      return 'Reload the Overleaf tab and try again, or use "Fetch from current Overleaf project" instead.';
     case 'unsupported_file_type':
-      return 'Skip this file or perform the change in Overleaf directly.';
+      return 'Skip this file, or make the change in Overleaf directly.';
     case 'remote_changed':
-      return 'Resolve the conflict manually — refresh the diff and retry.';
+      return 'Check the file in Overleaf, then run the pull again.';
     case 'write_back_disabled':
-      return 'Enable explicit write-back in the extension options first.';
+      return 'Turn on “Enable Overleaf write-back” in Options first.';
     case 'write_back_not_safe':
-      return 'Write-back is unavailable because safe Overleaf document versioning could not be confirmed.';
+      return "Nothing was changed in Overleaf. Check that you're signed in and can open the project, then run the pull again.";
     case 'local_replica_unavailable':
-      return 'Local replica requires File System Access API or a native helper.';
+      return "Local folder comparison isn't available yet.";
     case 'not_logged_in':
       return 'Sign in to Overleaf in this browser and try again.';
     case 'forbidden':
@@ -79,7 +90,7 @@ export function recoveryActionForLiveSyncError(code: LiveSyncErrorCode): string 
     case 'network':
       return 'Check your network and try again.';
     case 'bridge_outdated':
-      return 'Reload the Overleaf tab so the updated extension script loads, then try again.';
+      return 'Reload the Overleaf tab, then try again.';
     case 'bridge_session_lost':
       return 'Run the pull again; if it keeps happening, reload the Overleaf tab.';
     case 'already_exists':
@@ -88,8 +99,10 @@ export function recoveryActionForLiveSyncError(code: LiveSyncErrorCode): string 
       return 'Wait for the other pull to finish, then try again. If you closed the window that was running it, try again in two minutes.';
     case 'not_attempted':
       return 'Run the pull again.';
+    case 'page_not_recognized':
+      return "Reload the Overleaf tab. If that doesn't help, Overleaf may have changed its page and the extension needs an update.";
     default:
-      return 'Use the ZIP snapshot route as a fallback.';
+      return 'Reload the Overleaf tab and try again, or use "Fetch from current Overleaf project" instead.';
   }
 }
 
@@ -113,6 +126,11 @@ export type LiveProjectEntry = {
   _id: string;
   name: string;
   type?: string;
+  // Overleaf sends this on an uploaded file that is a "linked file" (one
+  // imported from a URL, another Overleaf project or a Mendeley / Zotero
+  // library), and omits it on a plain upload. The tree is passed through
+  // from joinProject as it is, so it is there when Overleaf sends it.
+  linkedFileData?: unknown;
 };
 
 export type LiveProjectMetadata = {

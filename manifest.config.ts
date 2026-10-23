@@ -28,8 +28,9 @@ export default defineManifest({
   name: 'Overleaf GitHub Snapshot',
   version: chromeVersion,
   version_name: semver !== chromeVersion ? semver : undefined,
+  // At most 132 characters (Chrome's limit).
   description:
-    'Commit Overleaf project snapshots to GitHub; optional live read-only sync via Overleaf\'s session.',
+    'Commit Overleaf projects to a GitHub repository, no Overleaf Premium needed. Experimental: pull GitHub changes back into Overleaf.',
   icons,
   // `scripting` is used for on-demand injection of the Overleaf content
   // script into tabs that were opened before the extension was installed

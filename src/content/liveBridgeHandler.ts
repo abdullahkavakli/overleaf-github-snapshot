@@ -24,9 +24,13 @@ import type {
   BridgeFailure,
   BridgeResponse,
   LiveCreateDocResponseData,
+  LiveDeleteEntityResponseData,
   LiveProjectMetadataResponseData,
   LiveReadDocResponseData,
+  LiveReplaceFileResponseData,
   LiveSessionDocRead,
+  LiveSessionFileHash,
+  LiveSessionHashFilesResponseData,
   LiveSessionOpenResponseData,
   LiveSessionReadDocsResponseData,
   LiveSnapshotResponseData,
@@ -42,7 +46,8 @@ import {
 } from '../shared/constants';
 import { mapWithConcurrency } from '../shared/concurrency';
 import { computeSha256 } from '../diff/fileHasher';
-import type { LiveSyncErrorCode } from '../overleaf/live/types';
+import { normalizeLineEndings, toOverleafStorableText } from '../shared/lineEndings';
+import { asDetail, type LiveSyncErrorCode } from '../overleaf/live/types';
 
 const JOIN_PROJECT_TIMEOUT_MS = 20_000;
 const JOIN_DOC_TIMEOUT_MS = 15_000;
@@ -64,6 +69,10 @@ type WorkshopProject = {
   _id: string;
   rootFolder?: WorkshopFolder[];
   name?: string;
+  // The project's main document (services/web ProjectEditorHandler sends
+  // rootDoc_id; rootDocId is read as well in case a build renames it).
+  rootDoc_id?: string;
+  rootDocId?: string;
 };
 
 type FlatEntry = {
@@ -239,9 +248,9 @@ async function fetchStaticFile(
     redirect: 'follow',
     cache: 'no-store',
   });
-  if (response.status === 401) throw new Error('not_logged_in: 401');
-  if (response.status === 403) throw new Error('forbidden: 403');
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  if (response.status === 401) throw new Error('you are signed out of Overleaf (HTTP 401)');
+  if (response.status === 403) throw new Error('Overleaf refused access to it (HTTP 403)');
+  if (!response.ok) throw new Error(`Overleaf answered HTTP ${response.status}`);
   const buf = await response.arrayBuffer();
   return new Uint8Array(buf);
 }
@@ -252,9 +261,8 @@ type JoinProjectResult = {
   permissions: unknown;
 };
 
-// A failed joinProject. The message is what the live read-only snapshot
-// has always shown; connectAndJoinProject words its own from `kind` and
-// `detail` where that message names protocol steps.
+// A failed joinProject, worded for the user; `detail` is Overleaf's own
+// reason, if it gave one.
 class JoinProjectError extends Error {
   constructor(
     message: string,
@@ -300,11 +308,9 @@ async function awaitJoinProject(
         settle(() =>
           reject(
             new JoinProjectError(
-              `Overleaf rejected the project join: ${reason}.${
-                rateLimited
-                  ? ' Overleaf limits how often a project can be joined; wait a minute, then retry.'
-                  : ''
-              }`,
+              rateLimited
+                ? `Overleaf is temporarily refusing to open this project because it was opened too often. Details: ${reason}.`
+                : `Overleaf refused to open this project for the extension. Details: ${reason}.`,
               rateLimited ? 'rate_limited' : 'rejected',
               reason,
             ),
@@ -329,7 +335,7 @@ async function awaitJoinProject(
         settle(() =>
           reject(
             new JoinProjectError(
-              `Overleaf closed the connection before joinProject completed (${reason}).`,
+              `Overleaf closed the connection while opening the project. Details: ${reason}.`,
               'closed',
               reason,
             ),
@@ -342,7 +348,7 @@ async function awaitJoinProject(
       settle(() =>
         reject(
           new JoinProjectError(
-            `joinProject did not respond within ${JOIN_PROJECT_TIMEOUT_MS}ms`,
+            `Overleaf did not open the project within ${JOIN_PROJECT_TIMEOUT_MS / 1000} seconds.`,
             'timeout',
             '',
           ),
@@ -400,29 +406,10 @@ async function joinDoc(
 export async function handleLiveFetchSnapshot(
   projectId: string,
 ): Promise<BridgeResponse<LiveSnapshotResponseData>> {
-  if (!/^[a-zA-Z0-9]+$/.test(projectId)) {
-    return failure('unknown', `Invalid Overleaf project ID: ${projectId}`);
-  }
-
   // Confirm we're on the right project — content script may have been
   // injected on a different project page.
-  const onPath = window.location.pathname;
-  if (!onPath.startsWith(`/project/${projectId}`)) {
-    return failure(
-      'project_join_failed',
-      `Content script is on a different page (${onPath}). Reopen the popup from the matching Overleaf project tab.`,
-      'Switch to the Overleaf project tab that matches the popup before retrying.',
-    );
-  }
-
-  const csrfToken = extractCsrfFromDocument();
-  if (!csrfToken) {
-    return failure(
-      'protocol_unavailable',
-      'CSRF token not found in this project page (no <meta name="ol-csrfToken">). Page layout may have changed.',
-      'Refresh the Overleaf tab and try again.',
-    );
-  }
+  const problem = checkProjectPage(projectId);
+  if (problem) return problem;
 
   // Diagnostics are OFF by default in stable releases. Even though the
   // socket client now redacts every payload to structural shape (no
@@ -441,51 +428,31 @@ export async function handleLiveFetchSnapshot(
     if (diagnosticsEnabled) console.debug(`[ofs-live] ${msg}`);
   };
 
-  const client = new SocketIo09Client({
-    baseUrl: 'https://www.overleaf.com',
-    handshakeQuery: { projectId, t: String(Date.now()) },
-    websocketQuery: { projectId },
-    // Redacted structural logging only (string lengths / array+object
-    // shape / protocol field names — never document content). Off unless
-    // the user opts in via the localStorage flag above.
-    debug: diagnosticsEnabled,
-  });
-
-  dbg('phase: connecting');
+  // Redacted structural logging only (string lengths / array+object
+  // shape / protocol field names — never document content). Off unless
+  // the user opts in via the localStorage flag above.
+  let client: SocketIo09Client;
+  let project: WorkshopProject;
   try {
-    await client.connect();
+    ({ client, project } = await connectAndJoinProject(projectId, diagnosticsEnabled, dbg));
   } catch (e) {
-    const msg = e instanceof SocketIo09Error ? e.message : e instanceof Error ? e.message : String(e);
-    return failure(
-      'socket_connection_failed',
-      `Could not open the Overleaf real-time channel: ${msg}`,
-      'Refresh the Overleaf tab and retry, or fall back to the ZIP route.',
-    );
+    // connectAndJoinProject's hints are written for the pull. Keep the
+    // sign-in hint; the others gain the ZIP-route fallback.
+    if (e instanceof BridgeOpError && e.code !== 'not_logged_in') {
+      const recovery =
+        e.recovery === JOIN_RATE_LIMITED_RECOVERY ? READ_ONLY_RATE_LIMITED_RECOVERY : READ_ONLY_RECOVERY;
+      return failure(e.code, e.message, recovery);
+    }
+    return failureFromError(e, 'project_join_failed', READ_ONLY_RECOVERY);
   }
 
-  dbg('phase: joinProject');
-  let projectResult: JoinProjectResult;
-  try {
-    projectResult = await awaitJoinProject(client, projectId);
-  } catch (e) {
-    client.disconnect();
-    return failure(
-      'project_join_failed',
-      e instanceof Error ? e.message : String(e),
-      'Refresh the Overleaf tab and retry, or fall back to the ZIP route.',
-    );
-  }
-
-  const entries = flattenWorkshopTree(projectResult.project.rootFolder);
+  const entries = flattenWorkshopTree(project.rootFolder);
   dbg(
     `phase: iterate entries (${entries.length}: ${entries.filter((e) => e.kind === 'doc').length} docs, ${entries.filter((e) => e.kind === 'file').length} files)`,
   );
   if (entries.length === 0) {
     client.disconnect();
-    return failure(
-      'project_join_failed',
-      'joinProject succeeded but the project tree is empty.',
-    );
+    return failure('project_join_failed', 'Overleaf opened the project but listed no files.');
   }
 
   const files: SerializedProjectFile[] = [];
@@ -513,7 +480,8 @@ export async function handleLiveFetchSnapshot(
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       dbg(`entry ${entry.path} failed: ${msg}`);
-      warnings.push(`${entry.path}: ${msg}`);
+      const reason = entry.kind === 'doc' ? docReadFailureReason(e) : msg;
+      warnings.push(`${entry.path}: couldn't be read from Overleaf. Details: ${asDetail(reason)}.`);
     }
   }
 
@@ -581,16 +549,34 @@ const APPLY_CONFIRM_TIMEOUT_MS = 5_000;
 const UNCONFIRMED_REREADS = 3;
 const UNCONFIRMED_REREAD_DELAY_MS = 1_000;
 const DOC_ID_RE = /^[a-zA-Z0-9]+$/;
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+// "Make Overleaf match GitHub exactly": uploaded files hashed per message,
+// and how old the session's tree may be before a replacement or deletion
+// re-reads it (see ProjectSession.ensureTreeFresh).
+const MAX_FILES_PER_HASH = 20;
+const HASH_FILES_CONCURRENCY = 3;
+const MIRROR_TREE_MAX_AGE_MS = 15_000;
+// Reading one uploaded file's bytes can take a while for a large image.
+const OVERLEAF_FILE_READ_TIMEOUT_MS = 120_000;
 // Same text as recoveryActionForLiveSyncError('bridge_session_lost'), so the
 // popup shows one hint whichever side reports the lost session.
 const SESSION_LOST_RECOVERY = 'Run the pull again; if it keeps happening, reload the Overleaf tab.';
 // Hints for a failed connect or project join on the session path (the pull
 // and the Options write-back test). No ZIP-route advice: that route copies
 // Overleaf to GitHub, so it is no fallback for a pull. Reloading the tab
-// joins the project again, so a rate-limited join only gets "wait"; its
-// message already says that, and the pull banner does not repeat it.
+// joins the project again, so a rate-limited join only gets "wait".
 const JOIN_FAILED_RECOVERY = 'Wait a minute, then try again. If it keeps failing, reload the Overleaf tab.';
-const JOIN_RATE_LIMITED_RECOVERY = 'Wait a minute, then retry.';
+const JOIN_RATE_LIMITED_RECOVERY = 'Wait a minute, then try again.';
+// The live read-only snapshot copies Overleaf to GitHub, so the ZIP route
+// is a fallback for it (handleLiveFetchSnapshot swaps these in).
+const READ_ONLY_RECOVERY =
+  'Reload the Overleaf tab and try again, or use "Fetch from current Overleaf project" instead.';
+const READ_ONLY_RATE_LIMITED_RECOVERY =
+  'Wait a minute, then try again, or use "Fetch from current Overleaf project" instead.';
+const PAGE_NOT_RECOGNIZED_MESSAGE = "The Overleaf page didn't look as expected, so the extension couldn't use it.";
+const PAGE_NOT_RECOGNIZED_RECOVERY =
+  "Reload the Overleaf tab. If that doesn't help, Overleaf may have changed its page and the extension needs an update.";
+const SESSION_CLOSED_MESSAGE = 'The connection to Overleaf for this run was closed.';
 // Deadlines for the Overleaf REST calls made inside the project's mutation
 // chain (folder and doc POSTs, the entities listing, the upload POST). A
 // request that never settles would otherwise hold the chain, and with it
@@ -678,16 +664,12 @@ function checkProjectPage(projectId: string): BridgeFailure | null {
   if (!onPath.startsWith(`/project/${projectId}`)) {
     return failure(
       'project_join_failed',
-      `Content script is on a different page (${onPath}). Reopen the popup from the matching Overleaf project tab.`,
-      'Switch to the Overleaf project tab that matches the popup before retrying.',
+      `The Overleaf tab is no longer showing this project (it is on ${onPath}).`,
+      'Open the project in that tab again, then try again.',
     );
   }
   if (!extractCsrfFromDocument()) {
-    return failure(
-      'protocol_unavailable',
-      'CSRF token not found in this project page (no <meta name="ol-csrfToken">). Page layout may have changed.',
-      'Refresh the Overleaf tab and try again.',
-    );
+    return failure('page_not_recognized', PAGE_NOT_RECOGNIZED_MESSAGE, PAGE_NOT_RECOGNIZED_RECOVERY);
   }
   return null;
 }
@@ -709,10 +691,18 @@ async function connectAndJoinProject(
     await client.connect();
   } catch (e) {
     client.disconnect();
+    // Without SocketIo09Error's "[stage] " tag.
+    const detail = errorMessage(e).replace(/^\[\w+\] /, '');
+    if (/HTTP 401\b/.test(detail)) {
+      throw new BridgeOpError(
+        'not_logged_in',
+        "You're signed out of Overleaf, so the extension couldn't open the project.",
+        'Sign in to Overleaf in this browser, reload the project tab, then try again.',
+      );
+    }
     throw new BridgeOpError(
       'socket_connection_failed',
-      // Without SocketIo09Error's "[stage] " tag.
-      `Could not connect to Overleaf: ${errorMessage(e).replace(/^\[\w+\] /, '')}`,
+      `Couldn't connect to Overleaf from the project tab. Details: ${detail.replace(/\.$/, '')}.`,
       JOIN_FAILED_RECOVERY,
     );
   }
@@ -727,30 +717,17 @@ async function connectAndJoinProject(
   }
 }
 
-// The session path's wording for a failed joinProject: what happened in the
-// message, what to do in the recovery.
+// A failed joinProject: what happened in the message, what to do in the
+// recovery.
 function projectJoinFailure(e: unknown): BridgeOpError {
   if (!(e instanceof JoinProjectError)) {
     return new BridgeOpError('project_join_failed', errorMessage(e), JOIN_FAILED_RECOVERY);
   }
-  switch (e.kind) {
-    case 'rate_limited':
-      return new BridgeOpError('project_join_failed', e.message, JOIN_RATE_LIMITED_RECOVERY);
-    case 'rejected':
-      return new BridgeOpError('project_join_failed', e.message, JOIN_FAILED_RECOVERY);
-    case 'closed':
-      return new BridgeOpError(
-        'project_join_failed',
-        `Overleaf closed the connection before the project opened (${e.detail}).`,
-        JOIN_FAILED_RECOVERY,
-      );
-    case 'timeout':
-      return new BridgeOpError(
-        'project_join_failed',
-        `Overleaf did not open the project within ${JOIN_PROJECT_TIMEOUT_MS / 1000} seconds.`,
-        JOIN_FAILED_RECOVERY,
-      );
-  }
+  return new BridgeOpError(
+    'project_join_failed',
+    e.message,
+    e.kind === 'rate_limited' ? JOIN_RATE_LIMITED_RECOVERY : JOIN_FAILED_RECOVERY,
+  );
 }
 
 // Project-room broadcasts that change the path of an existing entry
@@ -769,6 +746,9 @@ class ProjectSession {
   // Set when the session socket sees a rename or move after the cached
   // tree was read; ensureFolderPath re-reads the tree before using it.
   treeMoved = false;
+  // When the cached tree was last read from Overleaf: session open, a
+  // reconnect, or reloadTree(). ensureTreeFresh() uses it.
+  treeReadAt = Date.now();
   lastUsed = Date.now();
   private client: SocketIo09Client;
   private reconnecting: Promise<SocketIo09Client> | null = null;
@@ -781,6 +761,14 @@ class ProjectSession {
   // Folder paths whose refused POST already led to a tree re-read
   // (ensureFolderPath), so a name Overleaf keeps refusing costs one re-read.
   private readonly rereadFolderPaths = new Set<string>();
+  // What "Make Overleaf match GitHub exactly" already carried out on this
+  // session. The popup sends a request again when the first reply never
+  // arrived ("message port closed", after the request was delivered), so a
+  // repeat must be able to tell "I did this a moment ago" from "someone else
+  // changed it". An entity ID is only added after Overleaf answered 2xx.
+  readonly deletedEntityIds = new Set<string>();
+  // Old file ID -> the replacement Overleaf made of it.
+  readonly replacedFiles = new Map<string, { newId: string; becameDoc: boolean }>();
   private closed = false;
   private inFlight = 0;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -812,7 +800,7 @@ class ProjectSession {
   // on the socket sets it, never a failed re-read.
   async reloadTree(): Promise<void> {
     if (this.closed) {
-      throw new BridgeOpError('bridge_session_lost', 'The Overleaf session was closed.', SESSION_LOST_RECOVERY);
+      throw new BridgeOpError('bridge_session_lost', SESSION_CLOSED_MESSAGE, SESSION_LOST_RECOVERY);
     }
     if (this.treeReloadFailure) throw this.treeReloadFailure;
     const wasMoved = this.treeMoved;
@@ -823,12 +811,21 @@ class ProjectSession {
       const fresh = await connectAndJoinProject(this.projectId, this.debug, this.dbg);
       fresh.client.disconnect();
       this.project = fresh.project;
+      this.treeReadAt = Date.now();
     } catch (e) {
       if (wasMoved) this.treeMoved = true;
       this.treeReloadFailure =
         e instanceof BridgeOpError ? e : new BridgeOpError('project_join_failed', errorMessage(e), JOIN_FAILED_RECOVERY);
       throw this.treeReloadFailure;
     }
+  }
+
+  // Re-reads the tree unless it was read within `maxAgeMs` and no rename or
+  // move has been seen since. The operations of "Make Overleaf match GitHub
+  // exactly" call this first: the session's tree can be minutes old when a
+  // confirmed plan is applied, and they compare entity IDs against it.
+  async ensureTreeFresh(maxAgeMs: number): Promise<void> {
+    if (this.treeMoved || Date.now() - this.treeReadAt > maxAgeMs) await this.reloadTree();
   }
 
   // True the first time it is called for `folderPath` in this session.
@@ -863,7 +860,7 @@ class ProjectSession {
   getClient(): Promise<SocketIo09Client> {
     if (this.closed) {
       return Promise.reject(
-        new BridgeOpError('bridge_session_lost', 'The Overleaf session was closed.', SESSION_LOST_RECOVERY),
+        new BridgeOpError('bridge_session_lost', SESSION_CLOSED_MESSAGE, SESSION_LOST_RECOVERY),
       );
     }
     if (this.client.isOpen()) return Promise.resolve(this.client);
@@ -875,8 +872,8 @@ class ProjectSession {
     if (this.reconnects >= MAX_SESSION_RECONNECTS) {
       this.broken = new BridgeOpError(
         'socket_connection_failed',
-        `Overleaf closed the real-time connection ${this.reconnects + 1} times during this run.`,
-        'Refresh the Overleaf tab and run the pull again.',
+        `Overleaf kept dropping the connection during this run (${this.reconnects + 1} times).`,
+        'Reload the Overleaf tab, then run the pull again.',
       );
       return Promise.reject(this.broken);
     }
@@ -889,10 +886,11 @@ class ProjectSession {
         const fresh = await connectAndJoinProject(this.projectId, this.debug, this.dbg);
         if (this.closed) {
           fresh.client.disconnect();
-          throw new BridgeOpError('bridge_session_lost', 'The Overleaf session was closed.', SESSION_LOST_RECOVERY);
+          throw new BridgeOpError('bridge_session_lost', SESSION_CLOSED_MESSAGE, SESSION_LOST_RECOVERY);
         }
         this.client = fresh.client;
         this.project = fresh.project;
+        this.treeReadAt = Date.now();
         this.treeMoved = false;
         this.treeReloadFailure = null;
         this.watchTree(fresh.client);
@@ -988,8 +986,8 @@ async function openRegisteredSession(
   if (openSessions.size >= MAX_OPEN_SESSIONS) {
     return failure(
       'unknown',
-      `This Overleaf tab already has ${openSessions.size} busy extension sessions.`,
-      'Wait for the running pull to finish, then retry.',
+      'Other pulls are still running in this Overleaf tab.',
+      'Wait for them to finish, then try again.',
     );
   }
 
@@ -1011,8 +1009,14 @@ async function openRegisteredSession(
       sessionId: id,
       rootFolder: session.project.rootFolder ?? [],
       name: session.project.name,
+      ...(rootDocIdOf(session.project) ? { rootDocId: rootDocIdOf(session.project) } : {}),
     },
   };
+}
+
+function rootDocIdOf(project: WorkshopProject): string | undefined {
+  const id = project.rootDoc_id ?? project.rootDocId;
+  return typeof id === 'string' && DOC_ID_RE.test(id) ? id : undefined;
 }
 
 type SessionMessage = {
@@ -1026,6 +1030,11 @@ type SessionMessage = {
   path?: unknown;
   initialContent?: unknown;
   contentBase64?: unknown;
+  fileIds?: unknown;
+  fileId?: unknown;
+  expectedSha256?: unknown;
+  kind?: unknown;
+  entityId?: unknown;
 };
 
 // Entry point for every LIVE_SESSION_* message.
@@ -1047,7 +1056,7 @@ export async function handleLiveSessionMessage(
     if (message.type === 'LIVE_SESSION_CLOSE') return { ok: true, data: { closed: false } };
     return failure(
       'bridge_session_lost',
-      'The Overleaf session for this run is no longer open (the tab was reloaded, or the session sat idle too long).',
+      'The connection to Overleaf for this run is no longer open (the tab was reloaded, or it sat idle too long).',
       SESSION_LOST_RECOVERY,
     );
   }
@@ -1103,6 +1112,59 @@ async function runSessionOperation(
       if (!bytes.ok) return bytes;
       return session.exclusive(() => uploadBinaryInSession(session, target.data, bytes.data));
     }
+    case 'LIVE_SESSION_HASH_FILES': {
+      const fileIds = Array.isArray(message.fileIds) ? message.fileIds : [];
+      if (
+        fileIds.length === 0 ||
+        fileIds.length > MAX_FILES_PER_HASH ||
+        !fileIds.every((id) => typeof id === 'string' && DOC_ID_RE.test(id))
+      ) {
+        return failure('unknown', `fileIds must be 1 to ${MAX_FILES_PER_HASH} Overleaf file IDs.`);
+      }
+      const data: LiveSessionHashFilesResponseData = {
+        files: await hashFilesInSession(session, fileIds as string[]),
+      };
+      return { ok: true, data };
+    }
+    case 'LIVE_SESSION_REPLACE_FILE': {
+      const target = parseProjectPath(message.path);
+      if (!target.ok) return target;
+      const fileId = typeof message.fileId === 'string' ? message.fileId : '';
+      if (!DOC_ID_RE.test(fileId)) return failure('unknown', 'fileId (missing or not an Overleaf ID)');
+      const expectedSha256 = typeof message.expectedSha256 === 'string' ? message.expectedSha256 : '';
+      if (!SHA256_HEX_RE.test(expectedSha256)) {
+        return failure('unknown', 'expectedSha256 (missing or not a SHA-256)');
+      }
+      if (typeof message.contentBase64 !== 'string') {
+        return failure('unknown', 'contentBase64 (missing or non-string)');
+      }
+      const bytes = decodeBase64Payload(message.contentBase64);
+      if (!bytes.ok) return bytes;
+      return session.exclusive(() =>
+        replaceUploadedFileInSession(session, target.data, fileId, expectedSha256, bytes.data),
+      );
+    }
+    case 'LIVE_SESSION_DELETE_ENTITY': {
+      const kind = message.kind;
+      if (kind !== 'doc' && kind !== 'file' && kind !== 'folder') {
+        return failure('unknown', 'kind must be doc, file or folder.');
+      }
+      const target = parseProjectPath(message.path);
+      if (!target.ok) return target;
+      const entityId = typeof message.entityId === 'string' ? message.entityId : '';
+      if (!DOC_ID_RE.test(entityId)) return failure('unknown', 'entityId (missing or not an Overleaf ID)');
+      // A doc is deleted only against the text the plan read.
+      let expectedSha256 = '';
+      if (kind === 'doc') {
+        expectedSha256 = typeof message.expectedSha256 === 'string' ? message.expectedSha256 : '';
+        if (!SHA256_HEX_RE.test(expectedSha256)) {
+          return failure('unknown', 'expectedSha256 (missing or not a SHA-256)');
+        }
+      }
+      return session.exclusive(() =>
+        deleteEntityInSession(session, target.data, kind, entityId, expectedSha256),
+      );
+    }
     default:
       return failure('unknown', `Unknown session message type: ${String(message.type)}`);
   }
@@ -1111,18 +1173,18 @@ async function runSessionOperation(
 // Why a doc read failed, in words for the pull's result rows. The raw error
 // names protocol messages; diagnostics log it instead.
 function docReadFailureReason(e: unknown): string {
-  if (e instanceof BridgeOpError) return e.message;
+  if (e instanceof BridgeOpError) return asDetail(e.message);
   if (e instanceof SocketIo09Error) {
     switch (e.kind) {
       case 'server-error':
-        return `Overleaf refused to send the doc: ${describeServerError(e.serverError)}`;
+        return `Overleaf refused to send the file: ${describeServerError(e.serverError)}`;
       case 'transport':
         return 'The connection to Overleaf dropped';
       case 'timeout':
-        return `Overleaf did not send the doc within ${JOIN_DOC_TIMEOUT_MS / 1000} seconds`;
+        return `Overleaf did not send the file within ${JOIN_DOC_TIMEOUT_MS / 1000} seconds`;
     }
   }
-  return 'Overleaf sent the doc in a form this extension cannot read';
+  return 'Overleaf sent the file in a form this extension cannot read';
 }
 
 // Reads distinct docs with a few joinDocs in flight on the session socket.
@@ -1160,7 +1222,7 @@ async function readDocsInSession(
         docId,
         ok: false as const,
         code: 'document_join_failed' as const,
-        message: 'No read result.',
+        message: 'No result from Overleaf.',
       },
   );
 }
@@ -1194,7 +1256,9 @@ function validateWriteRequest(
 
 type ApplyConfirmation =
   | { kind: 'applied' }
-  | { kind: 'rejected'; message: string }
+  // An otUpdateError matching this doc. It may be about another update to
+  // the doc, so it is no verdict on ours (see watchOwnUpdate).
+  | { kind: 'error_reported'; message: string }
   | { kind: 'closed' }
   | { kind: 'timeout' };
 
@@ -1203,6 +1267,9 @@ type ApplyConfirmation =
 // sender gets `otUpdateApplied` carrying only { v, doc }, or `otUpdateError`
 // followed by a disconnect (DocumentUpdaterController). Waiting for one of
 // those keeps the verify read from racing the doc-updater queue.
+// otUpdateError goes to every socket that joined the doc when the
+// doc-updater fails on ANY update to it (e.g. the user's own edit in the
+// open tab), and ours may still be applied after it, so a read decides.
 function watchOwnUpdate(
   client: SocketIo09Client,
   docId: string,
@@ -1231,7 +1298,7 @@ function watchOwnUpdate(
       } else if (event.name === 'otUpdateError') {
         const detail = event.args[1] as { doc_id?: unknown } | undefined;
         if (!detail || detail.doc_id === undefined || detail.doc_id === docId) {
-          finish({ kind: 'rejected', message: describeServerError(event.args[0]) });
+          finish({ kind: 'error_reported', message: describeServerError(event.args[0]) });
         }
       }
     }),
@@ -1245,15 +1312,32 @@ function watchOwnUpdate(
 type ApplyOutcome =
   | { kind: 'applied' }
   // No verdict: the connection dropped with the update in flight, the ack
-  // timed out, or no confirmation came in time. The update may or may not
-  // have been applied; a read decides.
-  | { kind: 'unknown' }
-  | { kind: 'rejected'; failure: BridgeFailure };
+  // timed out, no confirmation came in time, or Overleaf reported an error
+  // for the doc (`reportedError`). The update may or may not have been
+  // applied; a read decides.
+  | { kind: 'unknown'; reportedError?: string }
+  | { kind: 'rejected'; failure: BridgeFailure; reason: string };
 
-function rejectedOutcome(message: string): ApplyOutcome {
+function noVerdict(client: SocketIo09Client, seen: ApplyConfirmation): ApplyOutcome {
+  if (seen.kind !== 'error_reported') return { kind: 'unknown' };
+  // Overleaf disconnects the socket right after otUpdateError. Drop it now,
+  // so the read reconnects instead of joining the doc on a closing socket.
+  client.disconnect();
+  return { kind: 'unknown', reportedError: seen.message };
+}
+
+// An error ack: Overleaf refused to queue the update, so the doc is
+// unchanged. Not 'remote_changed': the popup reports that code as a
+// conflict.
+function rejectedOutcome(reason: string): ApplyOutcome {
   return {
     kind: 'rejected',
-    failure: failure('remote_changed', message, 'Re-read the document, recompute the diff, and retry.'),
+    reason,
+    failure: failure(
+      'unknown',
+      `Overleaf didn't accept the change, so this file was not modified. Details: ${reason.replace(/\.$/, '')}.`,
+      'Run the pull again. If it keeps happening, reload the Overleaf tab.',
+    ),
   };
 }
 
@@ -1276,14 +1360,9 @@ async function applyOtUpdateAndConfirm(
     );
   } catch (e) {
     watch.stop();
-    // Overleaf's own verdicts: an otUpdateError for this doc that arrived
-    // before the ack failed, or an error ack.
-    const seen = await watch.outcome;
-    if (seen.kind === 'rejected') {
-      return rejectedOutcome(`Overleaf could not apply the update: ${seen.message}`);
-    }
+    // Overleaf's only verdict: an error ack, so the update was never queued.
     if (e instanceof SocketIo09Error && e.kind === 'server-error') {
-      return rejectedOutcome(`Overleaf refused the change: ${describeServerError(e.serverError)}`);
+      return rejectedOutcome(describeServerError(e.serverError));
     }
     // Anything else is a lost connection (or a lost ack), not a rejection.
     // Real-time submits an update even when its sender has disconnected
@@ -1291,14 +1370,11 @@ async function applyOtUpdateAndConfirm(
     // after a doc-updater error on ANY doc the socket joined, e.g. one the
     // user is editing. The caller's read on the reconnected socket decides.
     session.dbg(`phase: applyOtUpdate ${docId} -> no verdict (${errorMessage(e)})`);
-    return { kind: 'unknown' };
+    return noVerdict(client, await watch.outcome);
   }
   const confirmation = await watch.outcome;
   session.dbg(`phase: applyOtUpdate ${docId} -> ${confirmation.kind}`);
-  if (confirmation.kind === 'rejected') {
-    return rejectedOutcome(`Overleaf could not apply the update: ${confirmation.message}`);
-  }
-  return confirmation.kind === 'applied' ? { kind: 'applied' } : { kind: 'unknown' };
+  return confirmation.kind === 'applied' ? { kind: 'applied' } : noVerdict(client, confirmation);
 }
 
 // The read after an update. Without Overleaf's confirmation the update may
@@ -1345,15 +1421,15 @@ async function writeDocInSession(
     session.dbg(`phase: joinDoc ${docId} (pre-write) failed (${errorMessage(e)})`);
     return failure(
       'document_join_failed',
-      `Not written: could not read the doc right before writing it (${docReadFailureReason(e)}).`,
-      'Refresh the Overleaf tab and retry.',
+      `Not written: this file couldn't be read from Overleaf right before writing. Details: ${docReadFailureReason(e)}.`,
+      'Reload the Overleaf tab, then try again.',
     );
   }
   if (preWrite.version !== baseVersion) {
     return failure(
       'remote_changed',
-      `Document version changed since base (popup saw ${baseVersion}, server is at ${preWrite.version}).`,
-      'Re-read the document, recompute the diff, and retry.',
+      `This file changed in Overleaf just before it was written, so nothing was written to it. Details: Overleaf version ${preWrite.version}, expected ${baseVersion}.`,
+      'Check the change in Overleaf, then try again.',
     );
   }
 
@@ -1368,14 +1444,16 @@ async function writeDocInSession(
     session.dbg(`phase: joinDoc ${docId} (post-write verify) failed (${errorMessage(e)})`);
     return failure(
       'document_join_failed',
-      `Sent the change, but could not read the doc back to check it (${docReadFailureReason(e)}).`,
-      'The change may have landed; check the doc in Overleaf, or run the pull again.',
+      `The change was sent, but the file couldn't be read back to check it. Open it in Overleaf to confirm it looks right. Details: ${docReadFailureReason(e)}.`,
+      'Open the file in Overleaf to check it, or run the pull again.',
     );
   }
   if (applied.kind === 'unknown' && postWrite.version === baseVersion) {
     return failure(
       'unknown',
-      'The connection to Overleaf was interrupted while this doc was being written, and the doc still shows its old text. Run the pull again to retry it.',
+      applied.reportedError === undefined
+        ? 'The connection to Overleaf was interrupted while this file was being written, and it still shows its old text. Run the pull again to retry it.'
+        : `Overleaf reported an error while this file was being written, and it still shows its old text. Run the pull again to retry it. Details: ${applied.reportedError.replace(/\.$/, '')}.`,
     );
   }
   return {
@@ -1411,6 +1489,19 @@ class OverleafHttpError extends Error {
     super(`HTTP ${status} ${url}${detail ? ` — ${detail}` : ''}`);
     this.name = 'OverleafHttpError';
   }
+}
+
+// A 4xx: Overleaf refused the request, so it changed nothing. After a 5xx
+// (a server or gateway error) the request may still have been carried out.
+function isRefusedRequest(e: unknown): boolean {
+  return e instanceof OverleafHttpError && e.status >= 400 && e.status < 500;
+}
+
+// The cause of a failed REST call for a "Details:" line: status and
+// Overleaf's reason, without the request URL.
+function restErrorDetail(e: unknown): string {
+  if (e instanceof OverleafHttpError) return `HTTP ${e.status}${e.detail ? `: ${e.detail}` : ''}`;
+  return errorMessage(e);
 }
 
 async function overleafHttpError(response: Response, url: string): Promise<OverleafHttpError> {
@@ -1506,9 +1597,18 @@ function decodeBase64Payload(contentBase64: string): BridgeResponse<Uint8Array> 
 
 type FolderWalk =
   | { kind: 'done'; result: BridgeResponse<{ folderId: string; folder: WorkshopFolder }> }
-  // `folderPath` is the folder Overleaf refused to create; `nameTaken` is
-  // set when the reason was a name already in use there.
-  | { kind: 'post-failed'; segName: string; folderPath: string; nameTaken: boolean; message: string };
+  // `folderPath` is the folder whose POST failed. `refused` is set for a
+  // 4xx (nothing was created); after a 5xx, a timeout or a network error
+  // the folder may exist. `nameTaken` is set when the reason was a name
+  // already in use there.
+  | {
+      kind: 'post-failed';
+      segName: string;
+      folderPath: string;
+      refused: boolean;
+      nameTaken: boolean;
+      message: string;
+    };
 
 // Overleaf refuses a folder whose name is already used by a doc, file or
 // folder in the parent with HTTP 400 "file already exists"
@@ -1561,14 +1661,18 @@ async function walkFolderPath(
         kind: 'post-failed',
         segName,
         folderPath: folderSegments.slice(0, i + 1).join('/'),
+        refused: isRefusedRequest(e),
         nameTaken: isNameTakenError(e),
-        message: errorMessage(e),
+        message: restErrorDetail(e).replace(/\.$/, ''),
       };
     }
     if (!created._id) {
       return {
         kind: 'done',
-        result: failure('unknown', `Folder creation returned no _id for "${segName}".`),
+        result: failure(
+          'unknown',
+          `Couldn't confirm that the folder "${segName}" was created. Check the project in Overleaf before pulling again.`,
+        ),
       };
     }
     const newFolder: WorkshopFolder = {
@@ -1610,22 +1714,31 @@ async function ensureFolderPath(
       const failed = failureFromError(e, 'project_join_failed', JOIN_FAILED_RECOVERY);
       return {
         ...failed,
-        message: `A folder was renamed or moved in Overleaf during this pull, and reading the project's folders again failed: ${failed.message}`,
+        message: `A folder was renamed or moved in Overleaf during this pull, and the project's folders couldn't be read again, so nothing was added. Details: ${asDetail(failed.message)}.`,
       };
     }
   }
   for (;;) {
     const walk = await walkFolderPath(session, folderSegments, csrfToken);
     if (walk.kind === 'done') return walk.result;
+    if (!walk.refused) {
+      return failure(
+        'unknown',
+        `Overleaf didn't confirm that the folder "${walk.segName}" was created, so it may or may not be in the project now. This file was not added. Run the pull again to add it, or check the project in Overleaf. Details: ${walk.message}.`,
+      );
+    }
     if (!walk.nameTaken || !session.claimFolderReread(walk.folderPath)) {
-      return failure('unknown', `Folder creation failed for "${walk.segName}": ${walk.message}`);
+      return failure(
+        'unknown',
+        `Overleaf didn't create the folder "${walk.segName}", so nothing was added. Details: ${walk.message}.`,
+      );
     }
     try {
       await session.reloadTree();
     } catch (e) {
       return failure(
         'unknown',
-        `Folder creation failed for "${walk.segName}" (${walk.message}), and re-reading the project failed: ${errorMessage(e)}`,
+        `Overleaf didn't create the folder "${walk.segName}", so nothing was added. Details: ${walk.message}; reading the project's folders again failed: ${asDetail(errorMessage(e))}.`,
       );
     }
   }
@@ -1634,16 +1747,17 @@ async function ensureFolderPath(
 async function createDocInSession(
   session: ProjectSession,
   target: ProjectPath,
-  initialContent: string,
+  requestedContent: string,
 ): Promise<BridgeResponse<LiveCreateDocResponseData>> {
   const { path, filename, folderSegments } = target;
+  // Overleaf stores no "\r" (it drops the CR of CRLF and lone-CR text) and
+  // turns every surrogate, each half of an emoji, into U+FFFD. Seed and
+  // verify the storable text, so the read-back below compares like with like
+  // (a CRLF or emoji file would otherwise always "read back different").
+  const initialContent = toOverleafStorableText(requestedContent);
   const csrfToken = extractCsrfFromDocument();
   if (!csrfToken) {
-    return failure(
-      'protocol_unavailable',
-      'CSRF token not found in the Overleaf project page.',
-      'Refresh the Overleaf tab and try again.',
-    );
+    return failure('page_not_recognized', PAGE_NOT_RECOGNIZED_MESSAGE, PAGE_NOT_RECOGNIZED_RECOVERY);
   }
 
   // The socket must work before anything is created: the content is seeded
@@ -1664,14 +1778,14 @@ async function createDocInSession(
 
   if ((folder.docs ?? []).some((d) => d.name === filename)) {
     return failure(
-      'unknown',
-      `Document already exists at "${path}". Use write-back instead of create.`,
+      'already_exists',
+      'Not added: Overleaf already has a text file with this name. Run the pull again to update it.',
     );
   }
   if ((folder.fileRefs ?? []).some((f) => f.name === filename)) {
     return failure(
-      'unknown',
-      `A non-doc file already exists at "${path}". Refusing to create a doc with the same name.`,
+      'already_exists',
+      "Not added: Overleaf already has a file with this name that isn't editable text (an uploaded or linked file). It was left unchanged.",
     );
   }
 
@@ -1687,13 +1801,35 @@ async function createDocInSession(
     if (e instanceof OverleafRequestTimeout) {
       return failure(
         'unknown',
-        `${e.message}, so it is unknown whether this doc was created. Run the pull again to check.`,
+        `${e.message}, so it is unknown whether this file was created. Run the pull again to check.`,
       );
     }
-    return failure('unknown', `Doc creation failed for "${filename}": ${errorMessage(e)}`);
+    if (isNameTakenError(e)) {
+      // The name is taken: usually added after the preview (the cached tree
+      // predates it), or a folder of that name, which the preview's path maps
+      // don't list. Overleaf refused the new doc, so nothing was created or
+      // overwritten and the row reads as not added, not as a failure.
+      return failure(
+        'already_exists',
+        'Not added: Overleaf already has a file or folder with this name, so it was left unchanged.',
+      );
+    }
+    if (isRefusedRequest(e)) {
+      return failure(
+        'unknown',
+        `Overleaf didn't create this file. Details: ${restErrorDetail(e).replace(/\.$/, '')}.`,
+      );
+    }
+    return failure(
+      'unknown',
+      `Overleaf didn't confirm that this file was created, so it may or may not have been added. Run the pull again to check. Details: ${restErrorDetail(e).replace(/\.$/, '')}.`,
+    );
   }
   if (!createdDoc._id) {
-    return failure('unknown', `Doc creation returned no _id for "${filename}".`);
+    return failure(
+      'unknown',
+      `Couldn't confirm that "${filename}" was created. Check the project in Overleaf before pulling again.`,
+    );
   }
   const newDocId = createdDoc._id;
   // Record it so a later create or upload in this session sees it.
@@ -1720,14 +1856,14 @@ async function createDocInSession(
     session.dbg(`joinDoc ${newDocId} (initial seed) failed (${errorMessage(e)})`);
     return failure(
       'document_join_failed',
-      `Doc created, but its content could not be added: reading the new doc failed (${docReadFailureReason(e).replace(/\.$/, '')}). The doc exists in Overleaf but is empty; run the pull again to fill it in.`,
-      'Run the pull again, or paste the content into the new doc in Overleaf.',
+      `Created the file in Overleaf, but couldn't fill in its content, so it is empty. Run the pull again to fill it in. Details: ${docReadFailureReason(e).replace(/\.$/, '')}.`,
+      'Run the pull again, or paste the content from GitHub into the new file in Overleaf.',
     );
   }
   if (initial.text !== '') {
     return failure(
       'unknown',
-      `New doc is unexpectedly non-empty (length ${initial.text.length}). Refusing to overwrite to avoid clobbering content.`,
+      'Created the file, but it already had content in Overleaf, so nothing was added to it. Check the file in Overleaf.',
     );
   }
 
@@ -1741,8 +1877,8 @@ async function createDocInSession(
   if (seeded.kind === 'rejected') {
     return failure(
       'unknown',
-      `Doc created but initial content insert failed: ${seeded.failure.message}. The doc exists but is empty.`,
-      'Re-run the pull, or paste content into the doc manually.',
+      `Created the file in Overleaf, but Overleaf didn't accept its content, so it is empty. Run the pull again to fill it in. Details: ${seeded.reason.replace(/\.$/, '')}.`,
+      'Run the pull again, or paste the content from GitHub into the new file in Overleaf.',
     );
   }
 
@@ -1754,13 +1890,20 @@ async function createDocInSession(
     session.dbg(`joinDoc ${newDocId} (verify seed) failed (${errorMessage(e)})`);
     return failure(
       'document_join_failed',
-      `Doc created and its content sent, but reading it back to check it failed (${docReadFailureReason(e).replace(/\.$/, '')}). Check the doc in Overleaf, or run the pull again.`,
+      `Created the file and sent its content, but couldn't read it back to check it. Open it in Overleaf to confirm it looks right. Details: ${docReadFailureReason(e).replace(/\.$/, '')}.`,
     );
   }
-  if (verify.text !== initialContent) {
+  if (verify.text === '' && seeded.kind === 'unknown' && seeded.reportedError !== undefined) {
     return failure(
       'unknown',
-      `Doc created, but reading it back showed different content (${verify.text.length} characters in Overleaf, ${initialContent.length} expected). Check the doc in Overleaf.`,
+      `Created the file in Overleaf, but Overleaf reported an error while adding its content, and it is still empty. Run the pull again to fill it in. Details: ${seeded.reportedError.replace(/\.$/, '')}.`,
+      'Run the pull again, or paste the content from GitHub into the new file in Overleaf.',
+    );
+  }
+  if (normalizeLineEndings(verify.text) !== initialContent) {
+    return failure(
+      'unknown',
+      `Created the file, but its content in Overleaf doesn't match GitHub. Open it to check. Details: Overleaf has ${verify.text.length} characters, GitHub has ${initialContent.length}.`,
     );
   }
 
@@ -1827,13 +1970,22 @@ function mimeForFilename(name: string): string {
   }
 }
 
+// The upload POST came back OK, but its reply does not show the new file,
+// so whether the file was added is unknown.
+class UploadUnconfirmedError extends Error {
+  constructor(detail: string) {
+    super(detail);
+    this.name = 'UploadUnconfirmedError';
+  }
+}
+
 async function postOverleafMultipartUpload(
   projectId: string,
   parentFolderId: string,
   filename: string,
   bytes: Uint8Array,
   csrfToken: string,
-): Promise<{ fileId: string }> {
+): Promise<{ fileId: string; entityType?: string }> {
   // Copy into a fresh ArrayBuffer-backed Uint8Array so TS's strict
   // SharedArrayBuffer-vs-ArrayBuffer split is satisfied for the Blob
   // constructor. The .slice() also unanchors from any pooled buffer
@@ -1895,15 +2047,17 @@ async function postOverleafMultipartUpload(
       return (await response.json()) as unknown;
     } catch (e) {
       if (signal.aborted) throw e;
-      throw new Error(`Upload response was not JSON: ${e instanceof Error ? e.message : String(e)}`);
+      throw new UploadUnconfirmedError(
+        `the reply was not JSON (${e instanceof Error ? e.message : String(e)})`,
+      );
     }
   });
-  const obj = body as { entity_id?: string; _id?: string; success?: boolean };
+  const obj = body as { entity_id?: string; _id?: string; success?: boolean; entity_type?: unknown };
   const fileId = obj.entity_id ?? obj._id;
   if (!fileId) {
-    throw new Error(`Upload response had no entity_id / _id: ${JSON.stringify(body).slice(0, 200)}`);
+    throw new UploadUnconfirmedError(`the reply had no file ID: ${JSON.stringify(body).slice(0, 200)}`);
   }
-  return { fileId };
+  return { fileId, ...(typeof obj.entity_type === 'string' ? { entityType: obj.entity_type } : {}) };
 }
 
 // Fresh list of every doc and file path in the project, read from
@@ -1942,6 +2096,9 @@ async function fetchProjectEntityPaths(
   return out;
 }
 
+const ALREADY_IN_OVERLEAF_UPLOAD_MESSAGE =
+  'Not uploaded: Overleaf already has a file with this name. Existing files are never replaced.';
+
 // Create-only. Overleaf's upload route REPLACES an existing doc or file of
 // the same name (ProjectUploadController.uploadFile adds the entity with
 // replace=true), so this function is the only guard. The session's tree can
@@ -1958,11 +2115,7 @@ async function uploadBinaryInSession(
   const { path, filename, folderSegments } = target;
   const csrfToken = extractCsrfFromDocument();
   if (!csrfToken) {
-    return failure(
-      'protocol_unavailable',
-      'CSRF token not found in the Overleaf project page.',
-      'Refresh the Overleaf tab and try again.',
-    );
+    return failure('page_not_recognized', PAGE_NOT_RECOGNIZED_MESSAGE, PAGE_NOT_RECOGNIZED_RECOVERY);
   }
 
   try {
@@ -1977,17 +2130,11 @@ async function uploadBinaryInSession(
 
   // The cached tree already knows about entries that existed when the
   // session opened and the ones this session added.
-  if ((folder.docs ?? []).some((d) => d.name === filename)) {
-    return failure(
-      'already_exists',
-      `A doc already exists at "${path}" in Overleaf, so this file was not uploaded.`,
-    );
-  }
-  if ((folder.fileRefs ?? []).some((f) => f.name === filename)) {
-    return failure(
-      'already_exists',
-      `A file already exists at "${path}" in Overleaf, so it was not uploaded.`,
-    );
+  if (
+    (folder.docs ?? []).some((d) => d.name === filename) ||
+    (folder.fileRefs ?? []).some((f) => f.name === filename)
+  ) {
+    return failure('already_exists', ALREADY_IN_OVERLEAF_UPLOAD_MESSAGE);
   }
 
   let current: Map<string, string>;
@@ -1996,16 +2143,12 @@ async function uploadBinaryInSession(
   } catch (e) {
     return failure(
       'write_back_not_safe',
-      `Not uploaded: could not check with Overleaf whether "${path}" already exists (${errorMessage(e)}).`,
+      `Not uploaded: couldn't check with Overleaf whether this file already exists. Details: ${errorMessage(e).replace(/\.$/, '')}.`,
       'Run the pull again. If it keeps happening, reload the Overleaf tab.',
     );
   }
-  const taken = current.get(path);
-  if (taken !== undefined) {
-    return failure(
-      'already_exists',
-      `A ${taken === 'doc' ? 'doc' : 'file'} already exists at "${path}" in Overleaf, so this file was not uploaded.`,
-    );
+  if (current.has(path)) {
+    return failure('already_exists', ALREADY_IN_OVERLEAF_UPLOAD_MESSAGE);
   }
 
   session.dbg(`uploading binary "${filename}" (${bytes.length} bytes) to folder ${folderId}`);
@@ -2025,7 +2168,22 @@ async function uploadBinaryInSession(
         `${e.message}, so it is unknown whether this file was uploaded. Run the pull again to check.`,
       );
     }
-    return failure('unknown', `Binary upload failed for "${filename}": ${errorMessage(e)}`);
+    if (isRefusedRequest(e)) {
+      return failure(
+        'unknown',
+        `Overleaf rejected the upload, so this file was not added. Details: ${restErrorDetail(e).replace(/\.$/, '')}.`,
+      );
+    }
+    if (e instanceof UploadUnconfirmedError || e instanceof OverleafHttpError) {
+      return failure(
+        'unknown',
+        `Overleaf didn't confirm this upload, so the file may or may not have been added. Running the pull again is safe: existing files are skipped. Details: ${restErrorDetail(e).replace(/\.$/, '')}.`,
+      );
+    }
+    return failure(
+      'unknown',
+      `Couldn't reach Overleaf, so this file may not have been uploaded. Running the pull again is safe: existing files are skipped. Details: ${errorMessage(e).replace(/\.$/, '')}.`,
+    );
   }
   // Record it so a later create or upload in this session sees it.
   (folder.fileRefs ??= []).push({ _id: uploaded.fileId, name: filename });
@@ -2034,6 +2192,444 @@ async function uploadBinaryInSession(
     ok: true,
     data: { fileId: uploaded.fileId, path, sizeBytes: bytes.length },
   };
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// "Make Overleaf match GitHub exactly" (pull option, off by default): hash
+// uploaded files for the plan, replace an uploaded file, delete a doc, an
+// uploaded file or a folder. Nothing here runs unless the popup sends it for
+// a plan the user confirmed by typing `delete`. Both changing operations
+// run in the project's mutation chain and re-check Overleaf right before
+// they act, because the plan can be minutes old:
+//   1. the session tree is re-read when it is older than
+//      MIRROR_TREE_MAX_AGE_MS, and the entity at the path must still have the
+//      planned ID (a deleted and re-created or renamed entry has another);
+//   2. GET /project/:id/entities (fresh, not the session's tree) must still
+//      list the path with the planned type;
+//   3. a replaced file's bytes (GET /project/:id/file/:id) and a deleted
+//      doc's text (joinDoc) must still match what the plan read;
+//   4. a deleted folder must still be empty, in the tree and in the listing.
+// A refusal changes nothing and comes back as `remote_changed` (changed
+// after the preview) or `write_back_not_safe` (could not check). After a
+// 5xx, a timeout or a network error the outcome is unknown and the message
+// says so. Overleaf keeps what was replaced or deleted in the project's
+// History.
+//   DELETE /project/:id/doc|file|folder/:entity_id   (EditorHttpController)
+//   POST   /project/:id/upload                       replaces a same-name entry
+// ──────────────────────────────────────────────────────────────────────────
+
+// The folder at `segments` below the project root in the session's tree.
+function findFolderByPath(project: WorkshopProject, segments: string[]): WorkshopFolder | null {
+  let folder: WorkshopFolder | undefined = project.rootFolder?.[0];
+  if (!folder) return null;
+  for (const segment of segments) {
+    folder = (folder.folders ?? []).find((f) => f.name === segment);
+    if (!folder) return null;
+  }
+  return folder;
+}
+
+async function fetchOverleafFileBytes(projectId: string, fileId: string): Promise<Uint8Array> {
+  const url = `https://www.overleaf.com/project/${encodeURIComponent(projectId)}/file/${encodeURIComponent(fileId)}`;
+  return withDeadline(OVERLEAF_FILE_READ_TIMEOUT_MS, async (signal) => {
+    const response = await fetch(url, {
+      method: 'GET',
+      credentials: 'include',
+      redirect: 'follow',
+      cache: 'no-store',
+      signal,
+    });
+    if (!response.ok) throw await overleafHttpError(response, url);
+    return new Uint8Array(await response.arrayBuffer());
+  });
+}
+
+// SHA-256 and size of uploaded files as Overleaf holds them now. Read-only,
+// so it skips the mutation chain; a few files in flight at a time, and one
+// sequential retry for each that failed.
+async function hashFilesInSession(
+  session: ProjectSession,
+  fileIds: string[],
+): Promise<LiveSessionFileHash[]> {
+  const unique = Array.from(new Set(fileIds));
+  const outcomes = new Map<string, LiveSessionFileHash>();
+  const hashOne = async (fileId: string): Promise<void> => {
+    try {
+      session.dbg(`phase: read file ${fileId}`);
+      const bytes = await fetchOverleafFileBytes(session.projectId, fileId);
+      outcomes.set(fileId, {
+        fileId,
+        ok: true,
+        sha256: await computeSha256(bytes),
+        sizeBytes: bytes.byteLength,
+      });
+    } catch (e) {
+      session.dbg(`phase: read file ${fileId} failed (${errorMessage(e)})`);
+      outcomes.set(fileId, {
+        fileId,
+        ok: false,
+        code: 'unknown',
+        message: restErrorDetail(e),
+      });
+    }
+  };
+  await mapWithConcurrency(unique, HASH_FILES_CONCURRENCY, hashOne);
+  for (const fileId of unique) {
+    if (outcomes.get(fileId)?.ok !== true) await hashOne(fileId);
+  }
+  return unique.map(
+    (fileId) =>
+      outcomes.get(fileId) ?? {
+        fileId,
+        ok: false as const,
+        code: 'unknown' as const,
+        message: 'No result from Overleaf.',
+      },
+  );
+}
+
+const PAGE_CHECK_RECOVERY = 'Run the pull again. If it keeps happening, reload the Overleaf tab.';
+
+function treeUnreadableFailure(verb: 'replaced' | 'deleted', e: unknown): BridgeFailure {
+  return failure(
+    'write_back_not_safe',
+    `Not ${verb}: couldn't re-read the project's folders from Overleaf, so nothing was changed. Details: ${asDetail(errorMessage(e))}.`,
+    PAGE_CHECK_RECOVERY,
+  );
+}
+
+function listingUnreadableFailure(verb: 'replaced' | 'deleted', e: unknown): BridgeFailure {
+  return failure(
+    'write_back_not_safe',
+    `Not ${verb}: couldn't check with Overleaf that it is still the same file, so nothing was changed. Details: ${errorMessage(e).replace(/\.$/, '')}.`,
+    PAGE_CHECK_RECOVERY,
+  );
+}
+
+const REPLACE_CHANGED_MESSAGE =
+  "Not replaced: this uploaded file is not the one the preview showed any more (it was changed, moved or removed in Overleaf), so nothing was replaced by this step. Run the pull again to review it.";
+
+// Replaces an uploaded file (a fileRef) by uploading new bytes over it.
+// Overleaf's upload route replaces the same-name entry in the folder with a
+// new entity ID, and the old file goes to the project's History
+// (ProjectEntityUpdateHandler.upsertFile / _replaceFile). Unlike
+// uploadBinaryInSession this is allowed to hit an existing name, and only
+// this one: the path must still be an uploaded file with the planned ID and
+// the planned bytes (see the section comment above).
+async function replaceUploadedFileInSession(
+  session: ProjectSession,
+  target: ProjectPath,
+  fileId: string,
+  expectedSha256: string,
+  bytes: Uint8Array,
+): Promise<BridgeResponse<LiveReplaceFileResponseData>> {
+  const { path, filename, folderSegments } = target;
+  const csrfToken = extractCsrfFromDocument();
+  if (!csrfToken) {
+    return failure('page_not_recognized', PAGE_NOT_RECOGNIZED_MESSAGE, PAGE_NOT_RECOGNIZED_RECOVERY);
+  }
+
+  try {
+    await session.getClient();
+  } catch (e) {
+    return failureFromError(e, 'socket_connection_failed');
+  }
+  try {
+    await session.ensureTreeFresh(MIRROR_TREE_MAX_AGE_MS);
+  } catch (e) {
+    return treeUnreadableFailure('replaced', e);
+  }
+
+  const folder = findFolderByPath(session.project, folderSegments);
+  const entry = (folder?.fileRefs ?? []).find((f) => f.name === filename);
+  // A repeat of a replacement this session already made (the first reply
+  // never reached the popup): the old ID is gone, the file at the path is the
+  // one Overleaf made of it, and it holds the bytes now being sent.
+  const earlier = session.replacedFiles.get(fileId);
+  if (earlier && folder) {
+    if (earlier.becameDoc) {
+      if ((folder.docs ?? []).some((d) => d._id === earlier.newId && d.name === filename)) {
+        return {
+          ok: true,
+          data: { fileId: earlier.newId, path, sizeBytes: bytes.length, becameDoc: true, alreadyDone: true },
+        };
+      }
+    } else if (entry && entry._id === earlier.newId) {
+      let held: Uint8Array;
+      try {
+        held = await fetchOverleafFileBytes(session.projectId, earlier.newId);
+      } catch (e) {
+        return failure(
+          'unknown',
+          `Checked again whether this file was replaced, but couldn't read it. Open the file in Overleaf to confirm it looks right. Details: ${restErrorDetail(e).replace(/\.$/, '')}.`,
+        );
+      }
+      if ((await computeSha256(held)) === (await computeSha256(bytes))) {
+        return { ok: true, data: { fileId: earlier.newId, path, sizeBytes: bytes.length, alreadyDone: true } };
+      }
+    }
+  }
+  if (
+    !folder?._id ||
+    !entry ||
+    entry._id !== fileId ||
+    (folder.docs ?? []).some((d) => d.name === filename) ||
+    (folder.folders ?? []).some((f) => f.name === filename)
+  ) {
+    return failure('remote_changed', REPLACE_CHANGED_MESSAGE, 'Check the file in Overleaf, then run the pull again.');
+  }
+
+  let current: Map<string, string>;
+  try {
+    current = await fetchProjectEntityPaths(session.projectId, csrfToken);
+  } catch (e) {
+    return listingUnreadableFailure('replaced', e);
+  }
+  if (current.get(path) !== 'file') {
+    return failure('remote_changed', REPLACE_CHANGED_MESSAGE, 'Check the file in Overleaf, then run the pull again.');
+  }
+
+  let before: Uint8Array;
+  try {
+    before = await fetchOverleafFileBytes(session.projectId, fileId);
+  } catch (e) {
+    if (e instanceof OverleafHttpError && e.status === 404) {
+      return failure('remote_changed', REPLACE_CHANGED_MESSAGE, 'Check the file in Overleaf, then run the pull again.');
+    }
+    return failure(
+      'write_back_not_safe',
+      `Not replaced: couldn't read this uploaded file from Overleaf right before replacing it, so it was left as it is. Details: ${restErrorDetail(e).replace(/\.$/, '')}.`,
+      PAGE_CHECK_RECOVERY,
+    );
+  }
+  if ((await computeSha256(before)) !== expectedSha256) {
+    return failure(
+      'remote_changed',
+      'Not replaced: this uploaded file was changed in Overleaf after the preview, so it was left as it is. Run the pull again to review it.',
+      'Check the file in Overleaf, then run the pull again.',
+    );
+  }
+
+  session.dbg(`replacing uploaded file "${filename}" (${bytes.length} bytes) in folder ${folder._id}`);
+  let uploaded: { fileId: string; entityType?: string };
+  try {
+    uploaded = await postOverleafMultipartUpload(session.projectId, folder._id, filename, bytes, csrfToken);
+  } catch (e) {
+    if (e instanceof OverleafRequestTimeout) {
+      return failure(
+        'unknown',
+        `${e.message}, so it is unknown whether this file was replaced. Run the pull again to check.`,
+      );
+    }
+    if (isRefusedRequest(e)) {
+      return failure(
+        'unknown',
+        `Overleaf rejected the upload, so this file was not replaced. Details: ${restErrorDetail(e).replace(/\.$/, '')}.`,
+      );
+    }
+    return failure(
+      'unknown',
+      `Overleaf didn't confirm this upload, so the file may or may not have been replaced. Run the pull again to check. Details: ${
+        e instanceof UploadUnconfirmedError || e instanceof OverleafHttpError
+          ? restErrorDetail(e).replace(/\.$/, '')
+          : errorMessage(e).replace(/\.$/, '')
+      }.`,
+    );
+  }
+
+  // The replacement has a new ID (and Overleaf may have made it an editable
+  // text file instead). Record it so later operations in this run see it, and
+  // so a repeat of this request is recognised.
+  const becameDoc = uploaded.entityType === 'doc';
+  session.replacedFiles.set(fileId, { newId: uploaded.fileId, becameDoc });
+  if (becameDoc) {
+    folder.fileRefs = (folder.fileRefs ?? []).filter((f) => f._id !== fileId);
+    (folder.docs ??= []).push({ _id: uploaded.fileId, name: filename });
+    return { ok: true, data: { fileId: uploaded.fileId, path, sizeBytes: bytes.length, becameDoc: true } };
+  }
+  entry._id = uploaded.fileId;
+
+  // Verify-after-write: what Overleaf holds now is what was sent.
+  let after: Uint8Array;
+  try {
+    after = await fetchOverleafFileBytes(session.projectId, uploaded.fileId);
+  } catch (e) {
+    return failure(
+      'unknown',
+      `Uploaded the new version, but couldn't read it back to check it. Open the file in Overleaf to confirm it looks right. Details: ${restErrorDetail(e).replace(/\.$/, '')}.`,
+    );
+  }
+  if ((await computeSha256(after)) !== (await computeSha256(bytes))) {
+    return failure(
+      'unknown',
+      `Uploaded the new version, but what Overleaf holds doesn't match GitHub. Open the file to check. Details: Overleaf has ${after.length} bytes, GitHub has ${bytes.length}.`,
+    );
+  }
+  return { ok: true, data: { fileId: uploaded.fileId, path, sizeBytes: bytes.length } };
+}
+
+async function deleteOverleafEntity(
+  projectId: string,
+  kind: 'doc' | 'file' | 'folder',
+  entityId: string,
+  csrfToken: string,
+): Promise<void> {
+  const url = `https://www.overleaf.com/project/${encodeURIComponent(projectId)}/${kind}/${encodeURIComponent(entityId)}`;
+  await withDeadline(OVERLEAF_REST_TIMEOUT_MS, async (signal) => {
+    const response = await fetch(url, {
+      method: 'DELETE',
+      credentials: 'include',
+      headers: { Accept: 'application/json', 'X-Csrf-Token': csrfToken },
+      signal,
+    });
+    if (!response.ok) throw await overleafHttpError(response, url);
+  });
+}
+
+// Deletes one doc, uploaded file or folder, but only the entity the plan
+// saw (see the section comment above). A folder is deleted only while it is
+// empty: the plan deletes its contents first, and Overleaf's delete would
+// otherwise remove whatever it still holds.
+async function deleteEntityInSession(
+  session: ProjectSession,
+  target: ProjectPath,
+  kind: 'doc' | 'file' | 'folder',
+  entityId: string,
+  expectedSha256: string,
+): Promise<BridgeResponse<LiveDeleteEntityResponseData>> {
+  const { path, filename, folderSegments } = target;
+  const noun = kind === 'folder' ? 'folder' : 'file';
+  const changed = (): BridgeFailure =>
+    failure(
+      'remote_changed',
+      `Not deleted: this ${noun} is not the one the preview showed any more (it was changed, moved or removed in Overleaf), so nothing was deleted by this step. Run the pull again to review it.`,
+      'Check it in Overleaf, then run the pull again.',
+    );
+  const csrfToken = extractCsrfFromDocument();
+  if (!csrfToken) {
+    return failure('page_not_recognized', PAGE_NOT_RECOGNIZED_MESSAGE, PAGE_NOT_RECOGNIZED_RECOVERY);
+  }
+
+  try {
+    await session.getClient();
+  } catch (e) {
+    return failureFromError(e, 'socket_connection_failed');
+  }
+  try {
+    await session.ensureTreeFresh(MIRROR_TREE_MAX_AGE_MS);
+  } catch (e) {
+    return treeUnreadableFailure('deleted', e);
+  }
+
+  const parent = findFolderByPath(session.project, folderSegments);
+  const siblings: Array<{ _id?: string; name: string }> =
+    (kind === 'doc' ? parent?.docs : kind === 'file' ? parent?.fileRefs : parent?.folders) ?? [];
+  const entry = siblings.find((e) => e.name === filename);
+  if ((!entry || entry._id !== entityId) && session.deletedEntityIds.has(entityId)) {
+    // A repeat of a delete this session already carried out (the first reply
+    // never reached the popup): the entity is gone, and this session removed
+    // it. Nothing is deleted this time.
+    return { ok: true, data: { path, kind, alreadyDone: true } };
+  }
+  if (!parent) return changed();
+  if (!entry || entry._id !== entityId) return changed();
+  if (kind === 'folder') {
+    const folder = entry as WorkshopFolder;
+    if (
+      (folder.docs ?? []).length > 0 ||
+      (folder.fileRefs ?? []).length > 0 ||
+      (folder.folders ?? []).length > 0
+    ) {
+      return failure(
+        'remote_changed',
+        'Not deleted: this folder is not empty any more, so it was kept. Run the pull again to review it.',
+        'Check the folder in Overleaf, then run the pull again.',
+      );
+    }
+  }
+
+  let current: Map<string, string>;
+  try {
+    current = await fetchProjectEntityPaths(session.projectId, csrfToken);
+  } catch (e) {
+    return listingUnreadableFailure('deleted', e);
+  }
+  if (kind === 'folder') {
+    const prefix = `${path}/`;
+    if (current.has(path) || Array.from(current.keys()).some((p) => p.startsWith(prefix))) {
+      return failure(
+        'remote_changed',
+        'Not deleted: this folder is not empty any more, so it was kept. Run the pull again to review it.',
+        'Check the folder in Overleaf, then run the pull again.',
+      );
+    }
+  } else if (current.get(path) !== kind) {
+    return changed();
+  }
+
+  if (kind === 'doc') {
+    // The last check before the request: the doc still holds the text the
+    // preview showed. An edit made after this read, in the moments before
+    // the request lands, is not seen; the doc stays in Overleaf's History.
+    let text: string;
+    try {
+      const client = await session.getClient();
+      session.dbg(`phase: joinDoc ${entityId} (pre-delete)`);
+      text = (await joinDoc(client, entityId)).text;
+    } catch (e) {
+      session.dbg(`phase: joinDoc ${entityId} (pre-delete) failed (${errorMessage(e)})`);
+      return failure(
+        'write_back_not_safe',
+        `Not deleted: this file couldn't be read from Overleaf right before deleting it, so it was kept. Details: ${docReadFailureReason(e)}.`,
+        PAGE_CHECK_RECOVERY,
+      );
+    }
+    if ((await computeSha256(new TextEncoder().encode(text))) !== expectedSha256) {
+      return failure(
+        'remote_changed',
+        'Not deleted: this file was edited in Overleaf after the preview, so it was kept. Run the pull again to review it.',
+        'Check the file in Overleaf, then run the pull again.',
+      );
+    }
+  }
+
+  session.dbg(`deleting ${kind} ${entityId}`);
+  try {
+    await deleteOverleafEntity(session.projectId, kind, entityId, csrfToken);
+  } catch (e) {
+    if (e instanceof OverleafRequestTimeout) {
+      return failure(
+        'unknown',
+        `${e.message}, so it is unknown whether this ${noun} was deleted. Run the pull again to check.`,
+      );
+    }
+    if (e instanceof OverleafHttpError && e.status === 404) {
+      // Gone already (for example deleted by hand just now): nothing to do.
+      return failure(
+        'remote_changed',
+        `Not deleted: Overleaf no longer has this ${noun}, so there was nothing to delete.`,
+      );
+    }
+    if (isRefusedRequest(e)) {
+      return failure(
+        'unknown',
+        `Overleaf refused to delete this ${noun}, so it is still there. Details: ${restErrorDetail(e).replace(/\.$/, '')}.`,
+      );
+    }
+    return failure(
+      'unknown',
+      `Overleaf didn't confirm that this ${noun} was deleted, so it may or may not be gone. Run the pull again to check. Details: ${restErrorDetail(e).replace(/\.$/, '')}.`,
+    );
+  }
+
+  // Record it so later operations in this run (a folder deleted after its
+  // contents) see it, and so a repeat of this request is recognised.
+  session.deletedEntityIds.add(entityId);
+  const keep = (e: { _id?: string }) => e._id !== entityId;
+  if (kind === 'doc') parent.docs = (parent.docs ?? []).filter(keep);
+  else if (kind === 'file') parent.fileRefs = (parent.fileRefs ?? []).filter(keep);
+  else parent.folders = (parent.folders ?? []).filter(keep);
+  return { ok: true, data: { path, kind } };
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -2094,7 +2690,7 @@ export async function handleLiveReadDoc(
       return failureFromError(
         e,
         'document_join_failed',
-        'Refresh the Overleaf tab and retry, or fall back to the ZIP route.',
+        'Reload the Overleaf tab, then try again.',
       );
     }
   });

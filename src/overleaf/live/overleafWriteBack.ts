@@ -1,13 +1,13 @@
 // Explicit write-back of selected text files to Overleaf.
 //
 // This is the strict-safety path. Every write is preceded by:
-//   1. A ZIP backup (so the user can roll back).
+//   1. A ZIP backup: Overleaf's export must download and be a valid ZIP.
+//      The archive is not kept; Overleaf's History is the way back.
 //   2. A re-read of the current Overleaf content via the live channel.
 //   3. A conflict check against the user's base snapshot. If the remote
 //      changed since the base, we REFUSE to write (status = "conflict").
-//   4. An OT update on the document. If the doc channel cannot return a
-//      version, we REFUSE to write (status = "failed", message includes
-//      `write_back_not_safe`).
+//   4. An OT update on the document, sent only while the doc is still at
+//      the version that was read (otherwise status = "conflict").
 // and followed by a read-back that must match the intended text.
 //
 // No blind replace. No automatic conflict resolution. No silent overwrite.
@@ -15,32 +15,75 @@
 // All reads and writes go through one bridge session (one Overleaf socket
 // and joinProject), either the caller's or one opened for this call.
 
-import { downloadOverleafZip, type OverleafZipSnapshot } from '../overleafZipClient';
+import {
+  describeOverleafZipFetchError,
+  downloadOverleafZip,
+  type OverleafZipSnapshot,
+} from '../overleafZipClient';
 import { ZipError, readZipFromBytes } from '../../zip/zipReader';
 import { OverleafBridgeSession } from './bridgeSession';
 import { withProjectPullLock } from './projectPullLock';
 import { checkWriteBackConflict } from './conflictDetector';
 import { flattenProjectTree } from './overleafProjectLoader';
 import {
+  hasOverleafUnstorableChars,
+  normalizeLineEndings,
+  toOverleafStorableText,
+} from '../../shared/lineEndings';
+import { ALL_FILE_TYPES } from '../../shared/constants';
+import {
   LiveSyncError,
+  asDetail,
   type OverleafWriteBackOptions,
   type WriteBackCandidate,
   type WriteBackResult,
 } from './types';
 
 // Result message for a doc whose GitHub content already matches Overleaf.
-export const UNCHANGED_DOC_MESSAGE = 'No local change versus base — nothing to write.';
+export const UNCHANGED_DOC_MESSAGE = 'Overleaf already has this content, so nothing was written.';
+
+// Same, when the only difference is line endings (Overleaf keeps no "\r").
+export const UNCHANGED_LINE_ENDINGS_MESSAGE = 'Already matches GitHub (only the line endings differ).';
+
+// Same, when the only difference is characters Overleaf can't store: it
+// replaces each half of a surrogate pair with U+FFFD, so an emoji shows as two.
+export const UNCHANGED_UNSTORABLE_MESSAGE =
+  "Already matches GitHub, except for characters Overleaf can't store (such as emoji), which it shows as \uFFFD.";
+
+// Same, for a GitHub file that isn't valid UTF-8, when Overleaf holds the text
+// those bytes decode to (the invalid bytes shown as U+FFFD).
+export const UNCHANGED_NOT_UTF8_MESSAGE =
+  "Already matches GitHub, except for characters that aren't saved as UTF-8 text there, which Overleaf shows as \uFFFD. Re-save the file as UTF-8 on GitHub to fix them.";
+
+// Note on a row for a file that was written or created although part of its
+// GitHub text can't be stored.
+export const UNSTORABLE_WRITTEN_NOTE =
+  "Overleaf can't store some characters in this file (such as emoji), so it shows them as \uFFFD.";
+
+// Why a doc whose GitHub text is already in Overleaf needs no write. Which
+// differences were tolerated decides the wording.
+export function unchangedMessage(
+  gitHubText: string,
+  overleafText: string,
+  gitHubIsNotUtf8 = false,
+): string {
+  if (gitHubIsNotUtf8) return UNCHANGED_NOT_UTF8_MESSAGE;
+  if (gitHubText === overleafText) return UNCHANGED_DOC_MESSAGE;
+  if (normalizeLineEndings(gitHubText) === normalizeLineEndings(overleafText)) {
+    return UNCHANGED_LINE_ENDINGS_MESSAGE;
+  }
+  return UNCHANGED_UNSTORABLE_MESSAGE;
+}
 
 // The popup gave up waiting for a write (code 'network'); the content
 // script may still have applied it. Running the pull again settles it.
 const WRITE_TIMED_OUT_MESSAGE =
-  'The Overleaf tab did not answer in time, so it is unknown whether this doc was written. Run the pull again to check.';
+  'The Overleaf tab did not answer in time, so it is unknown whether this file was written. Run the pull again to check.';
 
 // Row text for a doc whose current text could not be read, so no write was
-// sent for it. `reason` may be a full sentence; its final period is dropped
-// inside the parentheses.
+// sent for it. `reason` may be a full sentence.
 export function readFailedMessage(reason: string): string {
-  return `Not written: reading the current text from Overleaf failed (${reason.replace(/\.$/, '')}). Run the pull again.`;
+  return `Not written: this file couldn't be read from Overleaf. Run the pull again. Details: ${asDetail(reason)}.`;
 }
 
 // An operation the session never sent ('not_attempted') becomes a skipped
@@ -57,10 +100,15 @@ function getExtension(path: string): string {
   return base.substring(idx).toLowerCase();
 }
 
+// Row text for a file whose type is not in the allowed list.
+export const NOT_ALLOWED_TYPE_MESSAGE =
+  'Not written: this file type is not in Options → Allowed write-back extensions.';
+
 export function isAllowedWriteBackExtension(
   path: string,
   allowedExtensions: string[],
 ): boolean {
+  if (allowedExtensions.includes(ALL_FILE_TYPES)) return true;
   const ext = getExtension(path);
   if (!ext) return false;
   return allowedExtensions.includes(ext);
@@ -77,7 +125,7 @@ export function filterWriteBackCandidates(
       rejected.push({
         path: c.path,
         status: 'skipped',
-        message: `Extension not in allowed write-back list (${options.allowedExtensions.join(', ')}).`,
+        message: NOT_ALLOWED_TYPE_MESSAGE,
       });
       continue;
     }
@@ -90,14 +138,15 @@ export function filterWriteBackCandidates(
 export type OverleafZipBackup = {
   projectId: string;
   takenAt: string;
-  // The parsed archive, used only to skip docs whose bytes already match
-  // GitHub. null when the archive is valid but was not parsed: empty (for
+  // The parsed archive, used only to skip docs whose text already matches
+  // GitHub (ignoring line endings). null when the archive is valid but was not parsed: empty (for
   // a project with no docs or files), or beyond the ZIP reader's limits.
   snapshot: OverleafZipSnapshot | null;
 };
 
 const ZIP_BACKUP_RECOVERY =
   'Check that you are signed in to Overleaf and can download this project as a ZIP, then try again.';
+const ZIP_BACKUP_FAILED = 'Nothing was changed in Overleaf: the project ZIP could not be checked.';
 
 // The gate is "Overleaf's export downloaded and is a valid ZIP"; a failed
 // download, a response that is not a ZIP, or an archive that cannot be
@@ -110,17 +159,18 @@ export async function takeZipBackup(
   projectId: string,
   projectHasEntries: boolean,
 ): Promise<OverleafZipBackup> {
-  const failed = (detail: string): LiveSyncError =>
-    new LiveSyncError(
-      'write_back_not_safe',
-      `Cannot write back: backup ZIP fetch failed (${detail}).`,
-      ZIP_BACKUP_RECOVERY,
-    );
   let download;
   try {
     download = await downloadOverleafZip(projectId);
   } catch (e) {
-    throw failed(e instanceof Error ? e.message : String(e));
+    // The download error's own advice, when it has one, replaces the
+    // generic hint, so the banner gives one piece of advice.
+    const { summary, advice, details } = describeOverleafZipFetchError(e);
+    throw new LiveSyncError(
+      'write_back_not_safe',
+      [ZIP_BACKUP_FAILED, summary, details].filter((part) => part).join(' '),
+      advice ?? ZIP_BACKUP_RECOVERY,
+    );
   }
   const takenAt = new Date().toISOString();
   try {
@@ -144,11 +194,15 @@ export async function takeZipBackup(
       if (!projectHasEntries) return { projectId, takenAt, snapshot: null };
       throw new LiveSyncError(
         'write_back_not_safe',
-        'Cannot write back: the backup ZIP from Overleaf is empty, but the project has files.',
+        `${ZIP_BACKUP_FAILED} Overleaf sent an empty ZIP, but the project has files.`,
         ZIP_BACKUP_RECOVERY,
       );
     }
-    throw failed(`Failed to parse Overleaf ZIP: ${e instanceof Error ? e.message : String(e)}`);
+    throw new LiveSyncError(
+      'write_back_not_safe',
+      `${ZIP_BACKUP_FAILED} Overleaf's project ZIP couldn't be opened. Details: ${asDetail(e instanceof Error ? e.message : String(e))}.`,
+      ZIP_BACKUP_RECOVERY,
+    );
   }
 }
 
@@ -180,7 +234,7 @@ export async function writeSelectedFilesBackToOverleaf(
         'Internal error: the Overleaf session belongs to a different project.',
       );
     }
-    // The caller (pullSnapshotIntoOverleaf) holds the pull lock.
+    // The caller (applyPullPlan) holds the pull lock.
     const written = await writeOnSession(projectId, context.session, allowed, options, context);
     return [...rejected, ...written];
   }
@@ -230,7 +284,8 @@ async function writeOnSession(
       results.push({
         path: candidate.path,
         status: 'skipped',
-        message: 'File is not an editable Overleaf document (likely a static file).',
+        message:
+          "Not written: Overleaf has no editable text file at this path. It may have been renamed or deleted, or it is an uploaded file.",
       });
       continue;
     }
@@ -251,18 +306,24 @@ async function writeOnSession(
       continue;
     }
 
+    // Overleaf stores no "\r" and turns every surrogate (each half of an
+    // emoji) into U+FFFD, so the text it will hold after this write is the
+    // storable form. Writing, checking and verifying all use that form, so a
+    // CRLF or emoji file does not fail verification on every pull.
+    const newText = toOverleafStorableText(candidate.newText);
+
     const check = await checkWriteBackConflict(
       candidate.path,
       candidate.oldText,
       currentSnapshot.text,
-      candidate.newText,
+      newText,
     );
 
     if (check.status === 'unchanged') {
       results.push({
         path: candidate.path,
         status: 'skipped',
-        message: UNCHANGED_DOC_MESSAGE,
+        message: unchangedMessage(candidate.newText, candidate.oldText),
       });
       continue;
     }
@@ -271,7 +332,7 @@ async function writeOnSession(
       results.push({
         path: candidate.path,
         status: 'conflict',
-        message: check.reason ?? 'Remote changed since base.',
+        message: check.reason ?? 'This file changed in Overleaf after it was read, so it was not overwritten.',
       });
       continue;
     }
@@ -280,32 +341,39 @@ async function writeOnSession(
       const after = await session.applyUpdate(
         docId,
         candidate.oldText,
-        candidate.newText,
+        newText,
         currentSnapshot.version,
       );
       // Verify by reading back the doc.
-      if (after.text !== candidate.newText) {
+      if (normalizeLineEndings(after.text) !== newText) {
         results.push({
           path: candidate.path,
           status: 'failed',
-          message: 'Write completed but verification read returned different content.',
+          message:
+            "After writing, this file in Overleaf doesn't match the new version (someone may have edited it at the same time). Open it in Overleaf to check; its History can restore an earlier version.",
         });
         continue;
       }
-      results.push({ path: candidate.path, status: 'written' });
+      results.push({
+        path: candidate.path,
+        status: 'written',
+        // The caller may have converted the text already (the pull does); this
+        // covers a caller that passes the GitHub text as it is.
+        ...(hasOverleafUnstorableChars(candidate.newText) ? { message: UNSTORABLE_WRITTEN_NOTE } : {}),
+      });
     } catch (e) {
       results.push(
         notAttemptedRow(candidate.path, e) ?? {
           path: candidate.path,
-          status: 'failed',
+          // 'remote_changed': the doc moved on between the fresh read and
+          // the write, so the content script sent nothing.
+          status: e instanceof LiveSyncError && e.code === 'remote_changed' ? 'conflict' : 'failed',
           message:
-            e instanceof LiveSyncError && e.code === 'write_back_not_safe'
-              ? 'Write-back is unavailable because safe Overleaf document versioning could not be confirmed.'
-              : e instanceof LiveSyncError && e.code === 'network'
-                ? WRITE_TIMED_OUT_MESSAGE
-                : e instanceof Error
-                  ? e.message
-                  : String(e),
+            e instanceof LiveSyncError && e.code === 'network'
+              ? WRITE_TIMED_OUT_MESSAGE
+              : e instanceof Error
+                ? e.message
+                : String(e),
         },
       );
     }

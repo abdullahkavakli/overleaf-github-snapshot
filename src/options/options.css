@@ -375,6 +375,24 @@ section h2 code {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent), transparent 60%);
 }
 
+/* The pull button while "Make Overleaf match GitHub exactly" is ticked: that
+   pull can delete files. A fixed red keeps white text readable in both themes. */
+.button.danger {
+  background: #cf222e;
+  color: #fff;
+  border-color: #cf222e;
+}
+
+.button.danger:hover:not(:disabled) {
+  background: #a40e26;
+  border-color: #a40e26;
+}
+
+.button.danger:focus-visible {
+  border-color: #cf222e;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #cf222e, transparent 60%);
+}
+
 /* ── Banners / status ──────────────────────────────────────── */
 
 .banner {
@@ -554,6 +572,15 @@ code {
   gap: 14px;
 }
 
+/* A sub-option of a Popup display switch, shown only while the switch is on. */
+.display-suboptions {
+  margin-top: 14px;
+  padding-left: 14px;
+  border-left: 2px solid var(--border);
+  animation: ofs-disclose 200ms ease-out;
+  transform-origin: top left;
+}
+
 /* One bordered card per experimental sub-feature so they read as
    independently togglable features rather than a flat option list. */
 .experimental-feature-card {
@@ -595,7 +622,8 @@ code {
   .field textarea {
     transition: none;
   }
-  .experimental-suboptions {
+  .experimental-suboptions,
+  .display-suboptions {
     animation: none;
   }
 }

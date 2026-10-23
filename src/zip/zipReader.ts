@@ -34,7 +34,9 @@ function decodeZipOrThrow(bytes: Uint8Array): Record<string, Uint8Array> {
   try {
     return unzipSync(bytes);
   } catch (e) {
-    throw new ZipError(`Failed to read ZIP: ${e instanceof Error ? e.message : String(e)}`);
+    throw new ZipError(
+      `This file couldn't be opened as a ZIP. Details: ${(e instanceof Error ? e.message : String(e)).replace(/\.$/, '')}.`,
+    );
   }
 }
 
@@ -77,21 +79,24 @@ export async function readZipFromFile(file: File): Promise<ProjectFile[]> {
 
 export async function readZipFromBytes(bytes: Uint8Array): Promise<ProjectFile[]> {
   if (bytes.length === 0) {
-    throw new ZipError('ZIP file is empty.');
+    throw new ZipError('This ZIP file is empty.');
   }
 
   const rawFiles = decodeZipOrThrow(bytes);
   if (Object.keys(rawFiles).length === 0) {
-    throw new ZipError('ZIP contains no files.', 'empty');
+    throw new ZipError('This ZIP contains no files.', 'empty');
   }
 
   const normalized = normalizeZipPaths(rawFiles);
   if (normalized.size === 0) {
     // Only directory entries.
-    throw new ZipError('ZIP contains no usable files after normalization.', 'empty');
+    throw new ZipError('This ZIP contains only folders, no files.', 'empty');
   }
   if (normalized.size > MAX_FILES) {
-    throw new ZipError(`ZIP contains too many files (${normalized.size} > ${MAX_FILES}).`, 'over_limit');
+    throw new ZipError(
+      `This project has ${normalized.size} files, more than the limit of ${MAX_FILES}.`,
+      'over_limit',
+    );
   }
 
   let totalSize = 0;
@@ -100,16 +105,16 @@ export async function readZipFromBytes(bytes: Uint8Array): Promise<ProjectFile[]
   for (const [path, content] of normalized) {
     if (content.byteLength > MAX_FILE_SIZE_BYTES) {
       throw new ZipError(
-        `File "${path}" is ${formatBytes(content.byteLength)} which exceeds the ${formatBytes(
+        `"${path}" is ${formatBytes(content.byteLength)}, more than the limit of ${formatBytes(
           MAX_FILE_SIZE_BYTES,
-        )} per-file limit.`,
+        )} per file.`,
         'over_limit',
       );
     }
     totalSize += content.byteLength;
     if (totalSize > MAX_PROJECT_SIZE_BYTES) {
       throw new ZipError(
-        `Project exceeds the ${formatBytes(MAX_PROJECT_SIZE_BYTES)} total size limit.`,
+        `This project is larger than the limit of ${formatBytes(MAX_PROJECT_SIZE_BYTES)} in total.`,
         'over_limit',
       );
     }
@@ -123,7 +128,7 @@ export async function readZipFromBytes(bytes: Uint8Array): Promise<ProjectFile[]
       try {
         text = bytesToText(content);
       } catch (e) {
-        throw new ZipError(`Failed to read "${path}" as UTF-8 text.`);
+        throw new ZipError(`"${path}" couldn't be read as UTF-8 text.`);
       }
     }
 

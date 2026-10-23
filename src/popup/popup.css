@@ -206,10 +206,17 @@ input[type='file']:focus-visible {
   border-radius: 4px;
 }
 
+/* The pull button while "Make Overleaf match GitHub exactly" is ticked: that
+   pull can delete files. A fixed red keeps white text readable in both themes. */
 .button.danger {
-  background: var(--danger);
+  background: #cf222e;
   color: #fff;
-  border-color: var(--danger);
+  border-color: #cf222e;
+}
+
+.button.danger:hover:not(:disabled) {
+  background: #a40e26;
+  border-color: #a40e26;
 }
 
 .button.full {
@@ -229,6 +236,15 @@ input[type='file']:focus-visible {
 .muted {
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.muted a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.muted a:hover {
+  text-decoration: underline;
 }
 
 .banner {
@@ -479,6 +495,19 @@ input[type='text']:focus {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   text-align: right;
+}
+
+/* A caution under a changed file (for example characters Overleaf can't
+   store that a commit would turn into U+FFFD); spans the path and size
+   columns. */
+.diff-row .diff-row-warning {
+  grid-column: 2 / -1;
+  padding: 3px 6px;
+  border-radius: 3px;
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .checkbox-row {

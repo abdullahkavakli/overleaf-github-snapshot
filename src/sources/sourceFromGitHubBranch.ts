@@ -20,8 +20,15 @@
 //     of the latency is network RTT to api.github.com rather than CPU.
 
 import { GitHubClient } from '../github/githubClient';
-import { COMMON_BINARY_EXTENSIONS, TEXT_EXTENSIONS } from '../shared/constants';
+import {
+  ALL_FILE_TYPES,
+  COMMON_BINARY_EXTENSIONS,
+  SYMLINK_SKIPPED_REASON_PREFIX,
+  TEXT_EXTENSIONS,
+} from '../shared/constants';
 import { computeSha256 } from '../diff/fileHasher';
+import { isRepoPathUnderDir } from '../diff/gitignore';
+import { decodeUtf8Text } from '../shared/lineEndings';
 import { base64ToUint8 } from '../overleaf/live/bridgeProtocol';
 import type { ProjectFile, RepoConfig } from '../shared/types';
 
@@ -42,7 +49,10 @@ function isLikelyText(path: string): boolean {
   return false;
 }
 
-function applyTargetDir(
+// Maps a repo path to a project-relative one by stripping RepoConfig.targetDir
+// (null: outside it). The pull and the "match GitHub exactly" deletion rules
+// share this, so both see the same paths.
+export function applyTargetDir(
   fullPath: string,
   targetDir: string | undefined,
 ): string | null {
@@ -55,12 +65,43 @@ function applyTargetDir(
   return rest || null;
 }
 
+// One entry of the branch's full tree inside the target directory, with the
+// project-relative path. 'file' is a regular blob, 'folder' a directory,
+// 'submodule' a link to another repository (tree type 'commit', mode 160000)
+// and 'symlink' a symbolic link (a blob of mode 120000). Unlike `files` it is
+// not filtered by file type, binary or UTF-8: it is what exists on GitHub. A
+// submodule or a symlink is never pulled (there is no file to copy), and
+// "Make Overleaf match GitHub exactly" keeps whatever Overleaf holds at or
+// under its path.
+export type GitHubTreeEntry = {
+  path: string;
+  kind: 'file' | 'folder' | 'submodule' | 'symlink';
+};
+
+// The text of one .gitignore of the repository. `dir` is the repository
+// folder that holds it ('' for the root), so a rule applies to the files
+// below that folder (see src/diff/gitignore.ts).
+export type GitHubGitignore = { dir: string; text: string };
+
 export type GitHubBranchSnapshot = {
   owner: string;
   repo: string;
   branch: string;
   commitSha: string;
   files: ProjectFile[];
+  // Every entry of the branch inside the target directory (see
+  // GitHubTreeEntry). "Make Overleaf match GitHub exactly" decides what is
+  // missing from GitHub with this list, never with `files`.
+  treeEntries: GitHubTreeEntry[];
+  // The repository's .gitignore files that govern the target directory (the
+  // ones in it and in the folders above it, read only when
+  // `readGitignores` was asked for). "Make Overleaf match GitHub exactly"
+  // keeps the Overleaf files they exclude.
+  gitignores: GitHubGitignore[];
+  // Always false today: a truncated tree is refused above before this is
+  // returned. The mirror plan checks it again so a future change can't turn
+  // the entries GitHub left out of a truncated listing into deletions.
+  treeTruncated: boolean;
   // Paths that landed inside the targetDir but were not pulled — usually
   // because they're not in the text-extension whitelist. Surfaced so the
   // pull dev panel can show the user what got dropped.
@@ -84,9 +125,18 @@ export type SourceFromGitHubBranchOptions = {
   // between obvious speedup and staying well within GitHub's secondary
   // rate-limit guidance for authenticated users.
   concurrency?: number;
+  // Also read the repository's .gitignore files (see
+  // GitHubBranchSnapshot.gitignores). Set for "Make Overleaf match GitHub
+  // exactly" only.
+  readGitignores?: boolean;
 };
 
 const DEFAULT_CONCURRENCY = 6;
+
+// Mode git gives a symbolic link.
+const SYMLINK_MODE = '120000';
+// Reason shown for a symbolic link the pull leaves out.
+const SYMLINK_SKIPPED_REASON = `${SYMLINK_SKIPPED_REASON_PREFIX} on GitHub, which is not a file Overleaf can hold`;
 
 export async function sourceFromGitHubBranch(
   token: string,
@@ -98,15 +148,17 @@ export async function sourceFromGitHubBranch(
   const commit = await client.getCommit(config.owner, config.repo, ref.object.sha);
   const tree = await client.getTree(config.owner, config.repo, commit.tree.sha, true);
 
-  if (tree.truncated) {
+  const treeTruncated: boolean = tree.truncated === true;
+  if (treeTruncated) {
     throw new Error(
-      'GitHub tree was truncated. Repository is too large to pull as-is — set a target directory on the project mapping so only a subset is pulled.',
+      "This repository has too many files for GitHub to list in one request, so it can't be pulled. Use a smaller repository.",
     );
   }
 
-  const allowedExts = options.allowedExtensions
-    ? new Set(options.allowedExtensions)
-    : null;
+  const allowedExts =
+    options.allowedExtensions && !options.allowedExtensions.includes(ALL_FILE_TYPES)
+      ? new Set(options.allowedExtensions)
+      : null;
   const includeBinaries = options.includeBinaries === true;
   const concurrency = Math.max(1, options.concurrency ?? DEFAULT_CONCURRENCY);
 
@@ -116,11 +168,52 @@ export async function sourceFromGitHubBranch(
   type Job = { projectPath: string; sha: string; treatAsText: boolean };
   const jobs: Job[] = [];
   const skipped: { path: string; reason: string }[] = [];
+  const treeEntries: GitHubTreeEntry[] = [];
+  const gitignoreJobs: Array<{ dir: string; sha: string }> = [];
+  const targetDir = (config.targetDir ?? '').trim().replace(/^\/+|\/+$/g, '');
 
   for (const item of tree.tree) {
+    const isSymlink = item.type === 'blob' && item.mode === SYMLINK_MODE;
+    if (item.path) {
+      // The full tree, before any type filter (see GitHubTreeEntry).
+      const entryPath = applyTargetDir(item.path, config.targetDir);
+      if (entryPath !== null) {
+        treeEntries.push({
+          path: entryPath,
+          kind:
+            item.type === 'tree'
+              ? 'folder'
+              : item.type === 'commit'
+                ? 'submodule'
+                : isSymlink
+                  ? 'symlink'
+                  : 'file',
+        });
+      }
+      // A .gitignore above or inside the target directory governs it.
+      if (
+        options.readGitignores === true &&
+        item.type === 'blob' &&
+        !isSymlink &&
+        item.sha &&
+        (item.path === '.gitignore' || item.path.endsWith('/.gitignore'))
+      ) {
+        const folder = item.path === '.gitignore' ? '' : item.path.slice(0, -'/.gitignore'.length);
+        // Inside the target directory, or in a folder above it.
+        if (isRepoPathUnderDir(folder, targetDir) || isRepoPathUnderDir(targetDir, folder)) {
+          gitignoreJobs.push({ dir: folder, sha: item.sha });
+        }
+      }
+    }
     if (item.type !== 'blob' || !item.path || !item.sha) continue;
     const projectPath = applyTargetDir(item.path, config.targetDir);
     if (projectPath === null) continue; // outside targetDir, ignored silently
+    if (isSymlink) {
+      // The blob holds the link's target path, not file content: never fetch
+      // it, and never write it to Overleaf as a file.
+      skipped.push({ path: projectPath, reason: SYMLINK_SKIPPED_REASON });
+      continue;
+    }
 
     const treatAsText = isLikelyText(projectPath);
     if (!treatAsText) {
@@ -171,17 +264,20 @@ export async function sourceFromGitHubBranch(
           };
           return file;
         }
-        // ignoreBOM: a leading BOM stays in the text, as it does in the
-        // Overleaf doc, so the pull neither strips it nor sees a change.
-        const text = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true }).decode(bytes);
+        // A leading BOM stays in the text, as it does in the Overleaf doc, so
+        // the pull neither strips it nor sees a change. Bytes that are not
+        // valid UTF-8 (a Windows-1252 file) decode to U+FFFD; the file is
+        // flagged so the pull never writes that text to Overleaf.
+        const decoded = decodeUtf8Text(bytes);
         const file: ProjectFile = {
           path: job.projectPath,
           content: bytes,
-          text,
+          text: decoded.text,
           encoding: 'utf-8',
           sha256,
           sizeBytes: bytes.byteLength,
           isBinary: false,
+          ...(decoded.valid ? {} : { invalidUtf8: true }),
         };
         return file;
       }),
@@ -191,12 +287,30 @@ export async function sourceFromGitHubBranch(
 
   files.sort((a, b) => a.path.localeCompare(b.path));
 
+  // The .gitignore files, when asked for. A read that fails fails the pull:
+  // without them the files the repository ignores could not be protected.
+  const gitignores: GitHubGitignore[] = [];
+  for (let i = 0; i < gitignoreJobs.length; i += concurrency) {
+    const batch = gitignoreJobs.slice(i, i + concurrency);
+    const texts = await Promise.all(
+      batch.map(async (job) => {
+        const blob = await client.getBlob(config.owner, config.repo, job.sha);
+        const bytes = base64ToUint8(blob.content.replace(/\s+/g, ''));
+        return { dir: job.dir, text: decodeUtf8Text(bytes).text };
+      }),
+    );
+    gitignores.push(...texts);
+  }
+
   return {
     owner: config.owner,
     repo: config.repo,
     branch: config.branch,
     commitSha: ref.object.sha,
     files,
+    treeEntries,
+    gitignores,
+    treeTruncated,
     skipped,
   };
 }
