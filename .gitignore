@@ -15,6 +15,7 @@ Thumbs.db
 !.vscode/extensions.json
 .idea/
 .claude/
+CLAUDE.md
 .cursor/
 .codex/
 .agents/
