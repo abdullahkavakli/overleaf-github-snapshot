@@ -77,7 +77,7 @@ import {
   type FileReplaceResult,
   type PullPlan,
 } from '../sources/pullFromGitHubHelpers';
-import type { SourceMode, SourceSnapshot } from '../sources/sourceTypes';
+import type { SourceSnapshot } from '../sources/sourceTypes';
 import { fetchOverleafLiveSnapshot } from '../overleaf/live/liveSyncManager';
 import {
   LiveSyncError,
@@ -1725,19 +1725,6 @@ function RepoSummary({
   );
 }
 
-function modeLabel(mode: SourceMode): string {
-  switch (mode) {
-    case 'manual-zip':
-      return 'Manual ZIP';
-    case 'overleaf-zip-route':
-      return 'Automatic ZIP';
-    case 'overleaf-live-readonly':
-      return 'Overleaf tab';
-    case 'local-replica':
-      return 'Local replica';
-  }
-}
-
 function PreviewView({
   config,
   projectId,
@@ -1780,10 +1767,6 @@ function PreviewView({
   return (
     <>
       <RepoSummary config={config} projectId={projectId} />
-      <div className="muted">
-        Source: <strong>{modeLabel(phase.snapshot.mode)}</strong>{' '}
-        <code>{phase.snapshot.displayName}</code>
-      </div>
       {hasFetchWarnings && (
         <div className="banner warning">
           {phase.snapshot.warnings.length} file{phase.snapshot.warnings.length === 1 ? '' : 's'}{' '}
