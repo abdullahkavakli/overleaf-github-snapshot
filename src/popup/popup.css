@@ -148,7 +148,8 @@ body {
 
 /* A drawn triangle rather than a glyph: '▸' is tiny at this size, and
    larger arrow characters can render as emoji on Windows. */
-.repo-summary > summary::before {
+.repo-summary > summary::before,
+.diff-section summary::before {
   content: '';
   align-self: center;
   flex-shrink: 0;
@@ -158,7 +159,8 @@ body {
   transition: transform 0.12s ease;
 }
 
-.repo-summary[open] > summary::before {
+.repo-summary[open] > summary::before,
+.diff-section[open] summary::before {
   transform: rotate(90deg);
 }
 
@@ -430,20 +432,6 @@ input[type='text']:focus {
 
 .diff-section summary::-webkit-details-marker {
   display: none;
-}
-
-.diff-section summary::before {
-  content: '▸';
-  display: inline-block;
-  margin-right: 4px;
-  font-size: 9px;
-  color: var(--text-muted);
-  transition: transform 0.12s ease;
-  transform-origin: 50% 50%;
-}
-
-.diff-section[open] summary::before {
-  transform: rotate(90deg);
 }
 
 .diff-section-title {
