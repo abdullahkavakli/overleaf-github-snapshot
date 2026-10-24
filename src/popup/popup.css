@@ -1,13 +1,17 @@
 :root {
   color-scheme: light dark;
+  /* Mintlify-style palette. --accent is a deeper mint than the brand's
+     #00b48a so focus rings and ticked boxes keep 3:1 on white. */
   --bg: #ffffff;
-  --bg-subtle: #f6f8fa;
-  --border: #d0d7de;
-  --text: #1f2328;
-  --text-muted: #656d76;
-  --accent: #1f6feb;
-  --accent-bg: #1f6feb;
-  --accent-hover: #1958c9;
+  --bg-subtle: #f7f7f7;
+  --border: #e5e5e5;
+  --divider: #ededed;
+  --text: #1c1c1e;
+  --text-muted: #5a5a5c;
+  --accent: #009e78;
+  --accent-bg: #0a0a0a;
+  --accent-hover: #1c1c1e;
+  --accent-on: #ffffff;
   --success: #1a7f37;
   --success-bg: #dafbe1;
   --danger: #cf222e;
@@ -22,14 +26,18 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0d1117;
-    --bg-subtle: #161b22;
-    --border: #30363d;
-    --text: #e6edf3;
-    --text-muted: #8b949e;
-    --accent: #2f81f7;
-    --accent-bg: #1f6feb;
-    --accent-hover: #388bfd;
+    /* The design defines no dark palette; this inverts it: near-black
+       canvas, white primary pill, the brand mint as accent. */
+    --bg: #0a0a0a;
+    --bg-subtle: #1c1c1e;
+    --border: #2e2e30;
+    --divider: #1f1f21;
+    --text: #ededed;
+    --text-muted: #b3b3b3;
+    --accent: #00d4a4;
+    --accent-bg: #ffffff;
+    --accent-hover: #e5e5e5;
+    --accent-on: #0a0a0a;
     --success: #56d364;
     --success-bg: #033a16;
     --danger: #ff7b72;
@@ -82,7 +90,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px;
+  padding: 12px 16px;
 }
 
 .popup-header h1 {
@@ -93,12 +101,14 @@ body {
 }
 
 .popup-header .gear {
-  border: none;
-  background: none;
-  color: var(--text-muted);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
   cursor: pointer;
-  padding: 6px;
-  border-radius: 6px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 9999px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -106,15 +116,14 @@ body {
 }
 
 .popup-header .gear:hover {
-  color: var(--text);
-  background: var(--border);
+  background: var(--bg-subtle);
 }
 
 .popup-body {
-  padding: 12px 16px 16px;
+  padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 
 .popup-body > .commit-form,
@@ -123,8 +132,11 @@ body {
 }
 
 .repo-summary {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 2px 12px;
 }
 
 .repo-summary > summary {
@@ -167,7 +179,7 @@ body {
 
 .repo-summary-branch {
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
-  font-size: 11px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -185,28 +197,43 @@ body {
   color: var(--text);
 }
 
+/* Inline code reads as a small chip; the repo row's code stays plain. */
+code {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  font-size: 12px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
 .repo-summary code {
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text);
   word-break: break-all;
+  background: none;
+  border: 0;
+  padding: 0;
 }
 
 .button {
   appearance: none;
   border: 1px solid var(--border);
-  background: var(--bg-subtle);
+  background: transparent;
   color: var(--text);
   font: inherit;
+  font-size: 14px;
   font-weight: 600;
-  padding: 8px 12px;
-  border-radius: 6px;
+  line-height: 1.3;
+  padding: 10px 20px;
+  border-radius: 9999px;
   cursor: pointer;
   transition: background 0.15s;
 }
 
 .button:hover:not(:disabled) {
-  background: var(--border);
+  background: var(--bg-subtle);
 }
 
 .button:disabled {
@@ -216,7 +243,7 @@ body {
 
 .button.primary {
   background: var(--accent-bg);
-  color: #fff;
+  color: var(--accent-on);
   border-color: var(--accent-bg);
 }
 
@@ -279,16 +306,18 @@ input[type='file']:focus-visible {
 
 .muted {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
+/* Underlined text-colour links: mint text can't reach 4.5:1 on white. */
 .muted a {
-  color: var(--accent);
-  text-decoration: none;
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .muted a:hover {
-  text-decoration: underline;
+  text-decoration-thickness: 2px;
 }
 
 .text-small {
@@ -296,7 +325,7 @@ input[type='file']:focus-visible {
 }
 
 .hint-small {
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .banner {
@@ -555,8 +584,8 @@ input[type='text']:focus {
 .checkbox-row {
   display: flex;
   align-items: flex-start;
-  gap: 6px;
-  font-size: 12px;
+  gap: 8px;
+  font-size: 13px;
 }
 
 .checkbox-row input[type='checkbox'] {
@@ -679,11 +708,11 @@ input[type='text']:focus {
 /* Sections are not boxed: one line separates each from what comes before
    it, except the first section on a screen (no line under the header). */
 .mode-section {
-  border-top: 1px solid var(--border);
-  padding-top: 14px;
+  border-top: 1px solid var(--divider);
+  padding-top: 16px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .popup-body > .mode-section:first-child {
