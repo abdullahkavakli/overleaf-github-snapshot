@@ -114,7 +114,7 @@ body {
   padding: 12px 16px 16px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 .popup-body > .commit-form,
@@ -125,14 +125,11 @@ body {
 .repo-summary {
   font-size: 12px;
   color: var(--text-muted);
-  background: var(--bg-subtle);
-  border: 1px solid var(--border);
-  border-radius: 6px;
 }
 
 .repo-summary > summary {
   cursor: pointer;
-  padding: 6px 10px;
+  padding: 6px 0;
   list-style: none;
   user-select: none;
   display: flex;
@@ -180,7 +177,7 @@ body {
   align-items: baseline;
   column-gap: 8px;
   row-gap: 2px;
-  padding: 0 10px 8px 25px;
+  padding: 0 0 8px 13px;
 }
 
 .repo-summary span.k {
@@ -679,14 +676,19 @@ input[type='text']:focus {
   border-color: var(--accent);
 }
 
+/* Sections are not boxed: one line separates each from what comes before
+   it, except the first section on a screen (no line under the header). */
 .mode-section {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
-  background: var(--bg);
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.popup-body > .mode-section:first-child {
+  border-top: none;
+  padding-top: 0;
 }
 
 .mode-title {
