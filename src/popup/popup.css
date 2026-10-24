@@ -425,6 +425,7 @@ input[type='text']:focus {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 6px;
   position: sticky;
   top: 0;
   z-index: 1;
@@ -434,10 +435,13 @@ input[type='text']:focus {
   display: none;
 }
 
+/* The summary's ::before triangle is a third flex item, so without the auto
+   margin space-between would centre the title. */
 .diff-section-title {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  margin-right: auto;
 }
 
 .diff-section-count {
