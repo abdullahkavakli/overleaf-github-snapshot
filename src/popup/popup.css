@@ -612,6 +612,7 @@ input[type='text']:focus {
   .button,
   .button.danger,
   .gear,
+  .popup-header .gear,
   .repo-summary > summary::before,
   .diff-section summary::before {
     transition: none;
