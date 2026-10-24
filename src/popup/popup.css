@@ -5,16 +5,18 @@
   --bg: #fafafa;
   --bg-subtle: #f7f7f7;
   --border: #e5e5e5;
-  --divider: #ededed;
   --text: #1c1c1e;
   --text-muted: #5a5a5c;
   --accent: #009e78;
   --accent-bg: #0a0a0a;
   --accent-hover: #1c1c1e;
   --accent-on: #ffffff;
+  --button-bg: #ebebeb;
+  --button-hover: #e0e0e0;
+  --field-bg: #efefef;
   --success: #1a7f37;
   --success-bg: #dafbe1;
-  --danger: #cf222e;
+  --danger: #c1121f;
   --danger-bg: #ffebe9;
   --warning-bg: #fff8c5;
   --warning-text: #7d4e00;
@@ -34,13 +36,15 @@
     --bg: #0a0a0a;
     --bg-subtle: #1c1c1e;
     --border: #2e2e30;
-    --divider: #1f1f21;
     --text: #ededed;
     --text-muted: #b3b3b3;
     --accent: #00d4a4;
     --accent-bg: #ffffff;
     --accent-hover: #e5e5e5;
     --accent-on: #0a0a0a;
+    --button-bg: #262628;
+    --button-hover: #2e2e30;
+    --field-bg: #1c1c1e;
     --success: #56d364;
     --success-bg: #033a16;
     --danger: #ff7b72;
@@ -61,13 +65,15 @@
   --bg: #0a0a0a;
   --bg-subtle: #1c1c1e;
   --border: #2e2e30;
-  --divider: #1f1f21;
   --text: #ededed;
   --text-muted: #b3b3b3;
   --accent: #00d4a4;
   --accent-bg: #ffffff;
   --accent-hover: #e5e5e5;
   --accent-on: #0a0a0a;
+  --button-bg: #262628;
+  --button-hover: #2e2e30;
+  --field-bg: #1c1c1e;
   --success: #56d364;
   --success-bg: #033a16;
   --danger: #ff7b72;
@@ -123,25 +129,25 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
+  padding: 16px 20px 4px;
 }
 
 .popup-header h1 {
   margin: 0;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
   letter-spacing: -0.01em;
 }
 
 .popup-header .gear {
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text);
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
   cursor: pointer;
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   padding: 0;
-  border-radius: 9999px;
+  border-radius: 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -149,14 +155,16 @@ body {
 }
 
 .popup-header .gear:hover {
+  color: var(--text);
   background: var(--bg-subtle);
 }
 
+/* Flat: no cards, borders or dividers; spacing alone separates sections. */
 .popup-body {
-  padding: 16px;
+  padding: 8px 20px 20px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 28px;
 }
 
 .popup-body > .commit-form,
@@ -167,14 +175,11 @@ body {
 .repo-summary {
   font-size: 13px;
   color: var(--text-muted);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 2px 12px;
 }
 
 .repo-summary > summary {
   cursor: pointer;
-  padding: 6px 0;
+  padding: 4px 0;
   list-style: none;
   user-select: none;
   display: flex;
@@ -222,7 +227,7 @@ body {
   align-items: baseline;
   column-gap: 8px;
   row-gap: 2px;
-  padding: 0 0 8px 13px;
+  padding: 4px 0 0 13px;
 }
 
 .repo-summary span.k {
@@ -235,7 +240,6 @@ code {
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
   font-size: 12px;
   background: var(--bg-subtle);
-  border: 1px solid var(--border);
   border-radius: 4px;
   padding: 0 4px;
 }
@@ -252,21 +256,22 @@ code {
 
 .button {
   appearance: none;
-  border: 1px solid var(--border);
-  background: transparent;
+  border: 1px solid transparent;
+  background: var(--button-bg);
   color: var(--text);
   font: inherit;
   font-size: 14px;
   font-weight: 600;
   line-height: 1.3;
-  padding: 10px 20px;
-  border-radius: 9999px;
+  min-height: 44px;
+  padding: 10px 16px;
+  border-radius: 8px;
   cursor: pointer;
   transition: background 0.15s;
 }
 
 .button:hover:not(:disabled) {
-  background: var(--bg-subtle);
+  background: var(--button-hover);
 }
 
 .button:disabled {
@@ -318,7 +323,6 @@ input[type='file']:focus-visible {
 
 .button.danger:hover:not(:disabled),
 .button.danger:focus-visible {
-  background: var(--bg);
   color: var(--danger);
   border-color: var(--danger);
 }
@@ -406,10 +410,10 @@ input[type='text'] {
   width: 100%;
   font-family: inherit;
   font-size: 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 8px;
-  background: var(--bg);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--field-bg);
   color: var(--text);
 }
 
@@ -617,7 +621,7 @@ input[type='text']:focus {
 .checkbox-row {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: 10px;
   font-size: 13px;
 }
 
@@ -724,10 +728,10 @@ input[type='text']:focus {
   width: 100%;
   font-family: inherit;
   font-size: 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 8px;
-  background: var(--bg);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--field-bg);
   color: var(--text);
 }
 
@@ -738,24 +742,25 @@ input[type='text']:focus {
   border-color: var(--accent);
 }
 
-/* Sections are not boxed: one line separates each from what comes before
-   it, except the first section on a screen (no line under the header). */
 .mode-section {
-  border-top: 1px solid var(--divider);
-  padding-top: 16px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
-.popup-body > .mode-section:first-child {
-  border-top: none;
-  padding-top: 0;
+/* Small direction label above a section title ("Overleaf → GitHub"). */
+.mode-eyebrow {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: -4px;
 }
 
 .mode-title {
   margin: 0 0 2px;
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
   letter-spacing: -0.01em;
   display: flex;

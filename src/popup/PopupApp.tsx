@@ -922,6 +922,7 @@ function ReadyView({
       <RepoSummary config={config} projectId={projectId} />
 
       <section className="mode-section">
+        <span className="mode-eyebrow">Overleaf → GitHub</span>
         <h2 className="mode-title">
           Commit Overleaf snapshot to GitHub
         </h2>
@@ -1009,6 +1010,7 @@ function ReadyView({
         experimental.overleafWriteBackEnabled &&
         !overleafContext && (
           <section className="mode-section">
+            <span className="mode-eyebrow">GitHub → Overleaf</span>
             <h2 className="mode-title">
               Pull from GitHub into Overleaf
             </h2>
@@ -1255,6 +1257,7 @@ function PullFromGitHubSection({
 
   return (
     <section className="mode-section">
+      <span className="mode-eyebrow">GitHub → Overleaf</span>
       <h2 className="mode-title">
         Pull from GitHub into Overleaf
       </h2>
