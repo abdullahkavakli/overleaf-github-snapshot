@@ -1,4 +1,4 @@
-// Types shared by experimental live-sync modules.
+// Types shared by the live-sync modules.
 //
 // IMPORTANT: nothing in these modules reads document.cookie, opens the
 // chrome.cookies API, or stores Overleaf credentials. The browser attaches
@@ -66,7 +66,7 @@ export function asDetail(message: string): string {
 export function recoveryActionForLiveSyncError(code: LiveSyncErrorCode): string {
   switch (code) {
     case 'live_sync_disabled':
-      return 'Enable experimental live sync in the extension options.';
+      return 'Enable live sync in the extension options.';
     case 'protocol_unavailable':
     case 'socket_connection_failed':
     case 'project_join_failed':

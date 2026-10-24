@@ -1,5 +1,5 @@
 // Source manager: turn each input mode (manual ZIP, automatic ZIP route,
-// experimental live pull) into a uniform SourceSnapshot. The diff/commit
+// live pull) into a uniform SourceSnapshot. The diff/commit
 // pipeline only ever operates on SourceSnapshot.files, so it remains source-
 // agnostic.
 

@@ -1,11 +1,11 @@
 // Offscreen document entrypoint.
 //
-// Reserved for hosting a long-lived Overleaf real-time connection if the
-// experimental live-sync mode is enabled and the service worker / popup
-// context cannot keep a WebSocket open. The current build does not use it
-// (live sync surfaces `protocol_unavailable` until a safe Engine.IO client
-// lands), but the file ships so future revisions can wire up an offscreen
-// keepalive without modifying the manifest pipeline.
+// Reserved for hosting a long-lived Overleaf real-time connection if live
+// sync is enabled and the service worker / popup context cannot keep a
+// WebSocket open. The current build does not use it (live sync surfaces
+// `protocol_unavailable` until a safe Engine.IO client lands), but the file
+// ships so future revisions can wire up an offscreen keepalive without
+// modifying the manifest pipeline.
 //
 // IMPORTANT:
 //   - This script must NEVER read document.cookie.

@@ -22,7 +22,7 @@ export function describeSourceMode(mode: SourceMode): string {
     case 'overleaf-zip-route':
       return 'Automatic Overleaf ZIP snapshot';
     case 'overleaf-live-readonly':
-      return 'Experimental live read-only';
+      return 'Live read-only';
     case 'local-replica':
       return 'Local replica prototype';
     default:

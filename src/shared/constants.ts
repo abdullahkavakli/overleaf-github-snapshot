@@ -25,9 +25,9 @@ export const DEFAULT_ALLOWED_WRITE_BACK_EXTENSIONS: string[] = [
 
 // Pull from GitHub into Overleaf (the master switch plus write-back) is on by
 // default, by the owner's decision. It stays behind a preview and, for a
-// pull that replaces files, the typed confirmation. The other experimental
-// features are off. These defaults apply only to a profile that never saved
-// the experimental settings; stored values are kept.
+// pull that replaces files, the typed confirmation. The other features are
+// off. These defaults apply only to a profile that never saved the live sync
+// settings; stored values are kept.
 export const DEFAULT_EXPERIMENTAL_CONFIG: ExperimentalConfig = {
   experimentalLiveSyncEnabled: true,
   liveReadOnlyPullEnabled: false,

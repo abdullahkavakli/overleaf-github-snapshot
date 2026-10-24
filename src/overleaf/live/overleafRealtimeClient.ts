@@ -1,4 +1,4 @@
-// Real-time client for the experimental live-sync mode.
+// Real-time client for the live-sync mode.
 //
 // The popup itself cannot open a same-origin WebSocket Overleaf will
 // accept (its origin is chrome-extension://, which the server rejects).

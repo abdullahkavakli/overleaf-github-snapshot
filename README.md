@@ -6,11 +6,11 @@ Install from the Chrome Web Store: [Overleaf GitHub Snapshot](https://chromewebs
 
 ## What it does
 
-**Overleaf → GitHub (stable).** Open an Overleaf project tab, click the extension icon, then **Fetch from current Overleaf project**. The extension downloads the project's source ZIP using your existing browser session and shows a diff against your GitHub branch. Nothing is committed until you confirm.
+**Overleaf → GitHub.** Open an Overleaf project tab, click the extension icon, then **Fetch from current Overleaf project**. The extension downloads the project's source ZIP using your existing browser session and shows a diff against your GitHub branch. Nothing is committed until you confirm.
 
 **Manual ZIP upload (optional, off by default).** Turn it on under **Options → Popup display → Enable manual ZIP upload** to get a fallback for when the automatic fetch fails: download the ZIP yourself in Overleaf (**File → Download → Download as source (.zip)**) and pick it under **Manual ZIP upload** in the popup. The section then appears when the automatic fetch fails or no Overleaf tab is open. It stays hidden when the project is too large to snapshot or has no files, because a ZIP you download yourself has the same problem. **Always show Manual ZIP upload** keeps it visible all the time. While the setting is off, the popup has no ZIP picker.
 
-**Experimental.** These features use Overleaf's internal, undocumented interface, so they can break whenever Overleaf changes it. **Fetch from current Overleaf project** remains the reliable path.
+**Live sync** has two features:
 
 - **Read from the open Overleaf tab (Overleaf → GitHub), off by default:** reads every file from the open Overleaf tab instead of downloading the ZIP.
 - **Pull from GitHub into Overleaf, on by default:** copies changed files from your GitHub branch into Overleaf, can add new files, and can make Overleaf match GitHub exactly. It shows what it will change and writes nothing until you confirm.
@@ -37,11 +37,11 @@ Upgrading from ≤ 0.4.x: your old single repo config pre-fills the form for the
 
 **Commit a snapshot.** With the project tab open, click **Fetch from current Overleaf project**, review the diff, then click **Commit to GitHub**. A commit deletes files on GitHub only when **Include deletions** is ticked.
 
-**Read from the open Overleaf tab.** In **Options**, tick **Enable reading from the Overleaf tab** (under **Enable experimental live sync**, which is on by default) and click **Save experimental settings**. A **Read from the open Overleaf tab** card appears in the popup. If any file can't be read, deletions are off for that commit, so a partial read can never remove files from GitHub.
+**Read from the open Overleaf tab.** In **Options**, tick **Enable reading from the Overleaf tab** (under **Enable live sync**, which is on by default) and click **Save live sync settings**. A **Read from the open Overleaf tab** card appears in the popup. If any file can't be read, deletions are off for that commit, so a partial read can never remove files from GitHub.
 
 **Pull from GitHub into Overleaf.**
 
-1. The pull is on by default, so there is nothing to switch on. Under **Options → Experimental Overleaf Live Sync** you can keep the safety defaults: **Check that Overleaf can export the project before writing** and **Ask me to confirm before replacing files in Overleaf** on, and the **Allowed write-back extensions** list (`.tex .bib .cls .sty .bst .md .txt`). To also upload new figures, PDFs and similar files, tick **Allow uploading new images and other non-text files**. After changing any of these, click **Save experimental settings**. If you turned the pull off earlier (**Enable experimental live sync** or **Enable Overleaf write-back**), tick them again and save.
+1. The pull is on by default, so there is nothing to switch on. Under **Options → Overleaf Live Sync** you can keep the safety defaults: **Check that Overleaf can export the project before writing** and **Ask me to confirm before replacing files in Overleaf** on, and the **Allowed write-back extensions** list (`.tex .bib .cls .sty .bst .md .txt`). To also upload new figures, PDFs and similar files, tick **Allow uploading new images and other non-text files**. After changing any of these, click **Save live sync settings**. If you turned the pull off earlier (**Enable live sync** or **Enable Overleaf write-back**), tick them again and save.
 2. With the Overleaf project tab open, open the popup. If you want files that are on GitHub but not in Overleaf to be added, tick **Also create new files in Overleaf** first. Then click **Pull from GitHub into Overleaf**.
 3. Review the preview. It lists the Overleaf files that will be replaced with the GitHub version, the new files that will be added, the images and other non-text files that will be uploaded, and the files left out, with the reason. Nothing has been written yet, and **Cancel** leaves Overleaf as it is.
 4. If existing files will be replaced, type `replace` and click **Pull N files**. If the pull only adds files, the button alone confirms. A file edited in Overleaf after the preview is left as it is and reported.

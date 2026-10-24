@@ -1,4 +1,4 @@
-// Orchestrates the experimental live read-only pull.
+// Orchestrates the live read-only pull.
 //
 // Architecture: the popup runs in chrome-extension://… origin and cannot
 // open a WebSocket Overleaf will accept. So this module looks up the
@@ -164,7 +164,7 @@ export async function fetchOverleafLiveSnapshot(
   experimental: ExperimentalConfig,
 ): Promise<OverleafLiveSnapshot> {
   if (!experimental.experimentalLiveSyncEnabled) {
-    throw new LiveSyncError('live_sync_disabled', 'Experimental features are turned off in Options.');
+    throw new LiveSyncError('live_sync_disabled', 'Live sync is turned off in Options.');
   }
   if (!experimental.liveReadOnlyPullEnabled) {
     throw new LiveSyncError(

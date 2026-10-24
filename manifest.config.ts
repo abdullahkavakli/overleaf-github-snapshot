@@ -30,7 +30,7 @@ export default defineManifest({
   version_name: semver !== chromeVersion ? semver : undefined,
   // At most 132 characters (Chrome's limit).
   description:
-    'Commit Overleaf projects to a GitHub repository, no Overleaf Premium needed. Experimental: pull GitHub changes back into Overleaf.',
+    'Commit Overleaf projects to a GitHub repository, no Overleaf Premium needed. Pull GitHub changes back into Overleaf.',
   icons,
   // `scripting` is used for on-demand injection of the Overleaf content
   // script into tabs that were opened before the extension was installed

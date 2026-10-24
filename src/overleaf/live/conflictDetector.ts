@@ -1,4 +1,4 @@
-// Strict conflict detector used by the experimental write-back path.
+// Strict conflict detector used by the write-back path.
 //
 // Compare three views of a file:
 //   - "base"    : what the user saw when they previewed the diff (their
