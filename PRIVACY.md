@@ -12,7 +12,7 @@ The extension may process the following data when you use it:
 - GitHub repository owner, repository name, branch, file metadata, and file contents needed to show diffs and create commits.
 - Overleaf project source files and project metadata needed to fetch a source snapshot and show diffs.
 - If you use the pull into Overleaf: file contents from your GitHub branch, which the extension adds to or updates in your Overleaf project. If you also tick "Make Overleaf match GitHub exactly" (off by default), the pull can additionally delete files from your Overleaf project that are not on GitHub and replace uploaded files there with the GitHub version, only after you type a confirmation word. To decide what to change, the extension reads those Overleaf files, the repository's `.gitignore` files (which it fetches from GitHub like any other file in the branch) and your remembered choice for that option, which is stored locally for each Overleaf project separately; Overleaf keeps deleted and replaced files in the project's History.
-- Extension settings, such as selected repository, branch, target directory, and live sync preferences.
+- Extension settings, such as selected repository, branch, target directory, live sync preferences, and display preferences such as the theme.
 
 ## How data is stored
 

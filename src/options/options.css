@@ -4,6 +4,7 @@
      than the brand's #00b48a so focus rings and ticked boxes keep 3:1 on
      white. */
   --bg: #fafafa;
+  --toggle-thumb: #ffffff;
   --bg-subtle: #f7f7f7;
   --border: #e5e5e5;
   --text: #1c1c1e;
@@ -26,11 +27,15 @@
     'Liberation Mono', monospace;
 }
 
+/* Dark tokens: with the system in dark mode unless the user picked Light
+   (Options → Appearance), and always when they picked Dark. Keep the two
+   blocks identical. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme='light']) {
     /* The design defines no dark palette; this inverts it: near-black
        canvas, white primary pill, the brand mint as accent. */
     --bg: #0a0a0a;
+    --toggle-thumb: #2e2e30;
     --bg-subtle: #1c1c1e;
     --border: #2e2e30;
     --text: #ededed;
@@ -47,6 +52,33 @@
     --warning-bg: #4d3800;
     --warning-text: #f0d775;
   }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  /* The design defines no dark palette; this inverts it: near-black
+     canvas, white primary pill, the brand mint as accent. */
+  --bg: #0a0a0a;
+  --toggle-thumb: #2e2e30;
+  --bg-subtle: #1c1c1e;
+  --border: #2e2e30;
+  --text: #ededed;
+  --text-muted: #b3b3b3;
+  --text-strong: #ffffff;
+  --accent: #00d4a4;
+  --accent-bg: #ffffff;
+  --accent-hover: #e5e5e5;
+  --accent-on: #0a0a0a;
+  --success: #56d364;
+  --success-bg: #033a16;
+  --danger: #ff7b72;
+  --danger-bg: #5a1e1f;
+  --warning-bg: #4d3800;
+  --warning-text: #f0d775;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
 }
 
 * {
@@ -125,7 +157,8 @@ section {
   margin-bottom: 0;
 }
 
-.field label {
+.field label,
+.field .field-label {
   font-size: 14px;
   font-weight: 600;
   color: var(--text);
@@ -582,5 +615,58 @@ code {
   .experimental-suboptions,
   .display-suboptions {
     animation: none;
+  }
+}
+
+/* Theme switch: Mintlify's pill toggle (toggle-monthly-yearly) with three
+   options. The track is the surface colour; the selected option sits on a
+   raised pill. */
+.theme-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 4px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  align-self: flex-start;
+}
+
+.theme-toggle label {
+  position: relative;
+  padding: 6px 16px;
+  border-radius: 9999px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.theme-toggle label:hover {
+  color: var(--text);
+}
+
+.theme-toggle label.active {
+  background: var(--toggle-thumb);
+  color: var(--text-strong);
+  box-shadow: 0 1px 2px rgba(10, 10, 10, 0.08);
+}
+
+.theme-toggle input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.theme-toggle label:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-toggle label {
+    transition: none;
   }
 }

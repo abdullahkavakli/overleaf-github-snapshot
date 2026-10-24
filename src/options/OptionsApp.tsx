@@ -5,8 +5,10 @@ import type {
   ProjectLink,
   ProjectLinkMap,
   RepoConfig,
+  ThemePreference,
   UIPreferences,
 } from '../shared/types';
+import { applyTheme } from '../shared/theme';
 import {
   DEFAULT_ALLOWED_WRITE_BACK_EXTENSIONS,
   DEFAULT_EXPERIMENTAL_CONFIG,
@@ -69,6 +71,12 @@ import {
   type PullPlan,
 } from '../sources/pullFromGitHubHelpers';
 
+const THEME_OPTIONS: Array<[ThemePreference, string]> = [
+  ['system', 'System'],
+  ['light', 'Light'],
+  ['dark', 'Dark'],
+];
+
 type SaveState =
   | { kind: 'idle' }
   | { kind: 'saving' }
@@ -126,11 +134,13 @@ export function Options(): React.ReactElement {
   const updateUiPrefs = async (next: UIPreferences) => {
     const previous = uiPrefs;
     setUiPrefs(next);
+    applyTheme(next.theme);
     setUiPrefsSaveError(null);
     try {
       await setUIPreferences(next);
     } catch (e) {
       setUiPrefs(previous);
+      applyTheme(previous.theme);
       setUiPrefsSaveError(e instanceof Error ? e.message : String(e));
     }
   };
@@ -237,6 +247,7 @@ export function Options(): React.ReactElement {
     setExtText(DEFAULT_ALLOWED_WRITE_BACK_EXTENSIONS.join('\n'));
     setExpSave({ kind: 'idle' });
     setUiPrefs(DEFAULT_UI_PREFERENCES);
+    applyTheme(DEFAULT_UI_PREFERENCES.theme);
     setUiPrefsSaveError(null);
   };
 
@@ -315,6 +326,32 @@ export function Options(): React.ReactElement {
             </button>
           </div>
         )}
+      </section>
+
+      <section aria-labelledby="sec-appearance">
+        <h2 id="sec-appearance">Appearance</h2>
+        <div className="field">
+          <span id="theme-label" className="field-label">
+            Theme
+          </span>
+          <div className="theme-toggle" role="radiogroup" aria-labelledby="theme-label">
+            {THEME_OPTIONS.map(([value, label]) => (
+              <label key={value} className={uiPrefs.theme === value ? 'active' : undefined}>
+                <input
+                  type="radio"
+                  name="theme"
+                  value={value}
+                  checked={uiPrefs.theme === value}
+                  onChange={() => void updateUiPrefs({ ...uiPrefs, theme: value })}
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+          <div className="hint">
+            For the popup and this page. System follows your computer's setting.
+          </div>
+        </div>
       </section>
 
       <section aria-labelledby="sec-display">

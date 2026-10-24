@@ -24,8 +24,11 @@
   --unchanged: #656d76;
 }
 
+/* Dark tokens: with the system in dark mode unless the user picked Light
+   (Options → Appearance), and always when they picked Dark. Keep the two
+   blocks identical. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme='light']) {
     /* The design defines no dark palette; this inverts it: near-black
        canvas, white primary pill, the brand mint as accent. */
     --bg: #0a0a0a;
@@ -49,6 +52,36 @@
     --deleted: #f85149;
     --unchanged: #8b949e;
   }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  /* The design defines no dark palette; this inverts it: near-black
+     canvas, white primary pill, the brand mint as accent. */
+  --bg: #0a0a0a;
+  --bg-subtle: #1c1c1e;
+  --border: #2e2e30;
+  --divider: #1f1f21;
+  --text: #ededed;
+  --text-muted: #b3b3b3;
+  --accent: #00d4a4;
+  --accent-bg: #ffffff;
+  --accent-hover: #e5e5e5;
+  --accent-on: #0a0a0a;
+  --success: #56d364;
+  --success-bg: #033a16;
+  --danger: #ff7b72;
+  --danger-bg: #5a1e1f;
+  --warning-bg: #4d3800;
+  --warning-text: #f0d775;
+  --added: #56d364;
+  --modified: #d29922;
+  --deleted: #f85149;
+  --unchanged: #8b949e;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
 }
 
 * {

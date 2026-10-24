@@ -101,4 +101,9 @@ export type UIPreferences = {
   // upload section in the popup all the time, not only after the automatic
   // fetch fails or when no Overleaf tab is open.
   alwaysShowManualUpload: boolean;
+  // Popup and Options colour theme; 'system' follows prefers-color-scheme.
+  // Dark by default.
+  theme: ThemePreference;
 };
+
+export type ThemePreference = 'system' | 'light' | 'dark';

@@ -217,6 +217,10 @@ export async function getUIPreferences(): Promise<UIPreferences> {
   return {
     manualZipUploadEnabled: stored.manualZipUploadEnabled === true,
     alwaysShowManualUpload: stored.alwaysShowManualUpload === true,
+    theme:
+      stored.theme === 'system' || stored.theme === 'light' || stored.theme === 'dark'
+        ? stored.theme
+        : DEFAULT_UI_PREFERENCES.theme,
   };
 }
 

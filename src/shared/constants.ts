@@ -57,6 +57,7 @@ export function writeBackExtensionsFor(config: ExperimentalConfig): string[] {
 export const DEFAULT_UI_PREFERENCES: UIPreferences = {
   manualZipUploadEnabled: false,
   alwaysShowManualUpload: false,
+  theme: 'dark',
 };
 
 export const DEFAULT_IGNORE_PATTERNS: string[] = [

@@ -10,6 +10,8 @@ Install from the Chrome Web Store: [Overleaf GitHub Snapshot](https://chromewebs
 
 **Manual ZIP upload (optional, off by default).** Turn it on under **Options → Popup display → Enable manual ZIP upload** to get a fallback for when the automatic fetch fails: download the ZIP yourself in Overleaf (**File → Download → Download as source (.zip)**) and pick it under **Manual ZIP upload** in the popup. The section then appears when the automatic fetch fails or no Overleaf tab is open. It stays hidden when the project is too large to snapshot or has no files, because a ZIP you download yourself has the same problem. **Always show Manual ZIP upload** keeps it visible all the time. While the setting is off, the popup has no ZIP picker.
 
+**Theme.** Under **Options → Appearance**, pick **Dark** (the default), **Light** or **System** (follows your computer) for the popup and the Options page.
+
 **Live sync** has two features:
 
 - **Read from the open Overleaf tab (Overleaf → GitHub), off by default:** reads every file from the open Overleaf tab instead of downloading the ZIP.
