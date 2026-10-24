@@ -83,8 +83,6 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-subtle);
 }
 
 .popup-header h1 {
