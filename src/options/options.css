@@ -1,17 +1,18 @@
 :root {
   color-scheme: light dark;
+  /* Mintlify-style palette, shared with the popup. --accent is a deeper mint
+     than the brand's #00b48a so focus rings and ticked boxes keep 3:1 on
+     white. */
   --bg: #ffffff;
-  --bg-subtle: #f6f8fa;
-  --bg-elevated: #ffffff;
-  --border: #d0d7de;
-  --border-muted: #e6e8eb;
-  --text: #1f2328;
-  --text-muted: #656d76;
-  --text-strong: #0d1117;
-  --accent: #1f6feb;
-  --accent-bg: #1f6feb;
-  --accent-hover: #1958c9;
-  --accent-soft: #ddf4ff;
+  --bg-subtle: #f7f7f7;
+  --border: #e5e5e5;
+  --text: #1c1c1e;
+  --text-muted: #5a5a5c;
+  --text-strong: #0a0a0a;
+  --accent: #009e78;
+  --accent-bg: #0a0a0a;
+  --accent-hover: #1c1c1e;
+  --accent-on: #ffffff;
   --success: #1a7f37;
   --success-bg: #dafbe1;
   --danger: #cf222e;
@@ -27,18 +28,18 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0d1117;
-    --bg-subtle: #161b22;
-    --bg-elevated: #161b22;
-    --border: #30363d;
-    --border-muted: #21262d;
-    --text: #e6edf3;
-    --text-muted: #8b949e;
+    /* The design defines no dark palette; this inverts it: near-black
+       canvas, white primary pill, the brand mint as accent. */
+    --bg: #0a0a0a;
+    --bg-subtle: #1c1c1e;
+    --border: #2e2e30;
+    --text: #ededed;
+    --text-muted: #b3b3b3;
     --text-strong: #ffffff;
-    --accent: #2f81f7;
-    --accent-bg: #1f6feb;
-    --accent-hover: #388bfd;
-    --accent-soft: #0c2d6b;
+    --accent: #00d4a4;
+    --accent-bg: #ffffff;
+    --accent-hover: #e5e5e5;
+    --accent-on: #0a0a0a;
     --success: #56d364;
     --success-bg: #033a16;
     --danger: #ff7b72;
@@ -79,11 +80,10 @@ body {
 }
 
 h1 {
-  margin: 0 0 6px;
-  font-size: 26px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: 1.15;
+  margin: 0 0 8px;
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.25;
   color: var(--text-strong);
 }
 
@@ -96,31 +96,19 @@ h1 {
 
 section h2 {
   margin: 0 0 16px;
-  font-size: 15px;
+  font-size: 18px;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  line-height: 1.4;
   color: var(--text-strong);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-section h2::before {
-  content: '';
-  display: inline-block;
-  width: 3px;
-  height: 14px;
-  background: var(--accent);
-  border-radius: 2px;
 }
 
 /* ── Section cards ──────────────────────────────────────────── */
 
 section {
-  background: var(--bg-elevated);
+  background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 22px 24px;
+  border-radius: 12px;
+  padding: 24px;
   margin-bottom: 16px;
 }
 
@@ -138,7 +126,7 @@ section {
 }
 
 .field label {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text);
   display: inline-flex;
@@ -152,21 +140,10 @@ section {
 }
 
 .field .hint {
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: 13px;
+  line-height: 1.4;
   color: var(--text-muted);
   margin-top: 2px;
-}
-
-.field .hint code,
-.lead code,
-section h2 code {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  background: var(--bg-subtle);
-  border: 1px solid var(--border-muted);
-  padding: 1px 5px;
-  border-radius: 4px;
 }
 
 .field input[type='text'],
@@ -175,13 +152,13 @@ section h2 code {
 .field textarea {
   width: 100%;
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.4;
-  padding: 8px 10px;
+  padding: 9px 12px;
   background: var(--bg);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
@@ -189,7 +166,7 @@ section h2 code {
 .field input[type='password'].mono,
 .field textarea.mono {
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: 13px;
 }
 
 .field input[type='text']:hover,
@@ -205,14 +182,14 @@ section h2 code {
 .field textarea:focus-visible {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent), transparent 75%);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 
 .field textarea {
   resize: vertical;
   min-height: 130px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.5;
 }
 
@@ -255,15 +232,15 @@ section h2 code {
 .token-row input {
   flex: 1;
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: 13px;
 }
 
 .token-row .toggle {
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0 12px;
-  font-size: 12px;
+  border-radius: 9999px;
+  padding: 0 16px;
+  font-size: 13px;
   font-weight: 500;
   cursor: pointer;
   color: var(--text-muted);
@@ -277,9 +254,8 @@ section h2 code {
 }
 
 .token-row .toggle:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent), transparent 75%);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* ── Checkbox row ───────────────────────────────────────────── */
@@ -306,7 +282,7 @@ section h2 code {
 }
 
 .checkbox-row label {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
   color: var(--text);
   cursor: pointer;
@@ -331,13 +307,14 @@ section h2 code {
 .button {
   appearance: none;
   border: 1px solid var(--border);
-  background: var(--bg);
+  background: transparent;
   color: var(--text);
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
-  padding: 8px 16px;
-  border-radius: 6px;
+  line-height: 1.3;
+  padding: 10px 20px;
+  border-radius: 9999px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -351,9 +328,8 @@ section h2 code {
 }
 
 .button:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent), transparent 75%);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .button:disabled {
@@ -363,18 +339,13 @@ section h2 code {
 
 .button.primary {
   background: var(--accent-bg);
-  color: #fff;
+  color: var(--accent-on);
   border-color: var(--accent-bg);
 }
 
 .button.primary:hover:not(:disabled) {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
-}
-
-.button.primary:focus-visible {
-  border-color: var(--accent-bg);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent), transparent 60%);
 }
 
 /* The pull button while "Make Overleaf match GitHub exactly" is ticked: that
@@ -388,13 +359,13 @@ section h2 code {
 }
 
 .button.danger:focus-visible {
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger), transparent 60%);
+  outline-color: var(--danger);
 }
 
 /* ── Banners / status ──────────────────────────────────────── */
 
 .banner {
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 10px 12px;
   font-size: 13px;
   margin-bottom: 14px;
@@ -444,7 +415,7 @@ section h2 code {
 
 .test-result .headline {
   font-weight: 600;
-  font-size: 13.5px;
+  font-size: 14px;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -470,26 +441,17 @@ section h2 code {
   flex: 0 0 auto;
 }
 
-.test-result code {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  background: var(--bg-subtle);
-  border: 1px solid var(--border-muted);
-  padding: 1px 5px;
-  border-radius: 4px;
-}
-
 .test-result .error-text {
   color: var(--danger);
-  font-size: 12.5px;
-  line-height: 1.45;
+  font-size: 13px;
+  line-height: 1.4;
   margin-top: 2px;
 }
 
 /* ── Inline status (next to save button) ───────────────────── */
 
 .save-status {
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 500;
   display: inline-flex;
   align-items: center;
@@ -506,14 +468,16 @@ section h2 code {
 
 /* ── Misc helpers ──────────────────────────────────────────── */
 
+/* Underlined text-colour links: mint text can't reach 4.5:1 on white. */
 a {
-  color: var(--accent);
-  text-decoration: none;
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
   border-radius: 2px;
 }
 
 a:hover {
-  text-decoration: underline;
+  text-decoration-thickness: 2px;
 }
 
 a:focus-visible {
@@ -524,6 +488,10 @@ a:focus-visible {
 code {
   font-family: var(--font-mono);
   font-size: 12px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  padding: 0 4px;
+  border-radius: 4px;
 }
 
 .spinner {
@@ -574,17 +542,16 @@ code {
    independently togglable features rather than a flat option list. */
 .experimental-feature-card {
   margin-top: 0;
-  padding: 14px 16px 16px;
+  padding: 16px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg);
 }
 
 .experimental-feature-heading {
-  margin: 0 0 10px;
+  margin: 0 0 12px;
   font-size: 14px;
   font-weight: 600;
-  letter-spacing: -0.01em;
 }
 
 @keyframes ofs-disclose {
