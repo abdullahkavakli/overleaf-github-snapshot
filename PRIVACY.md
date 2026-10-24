@@ -1,6 +1,6 @@
 # Privacy Policy
 
-Effective date: 2026-10-22
+Effective date: 2026-10-24
 
 Overleaf GitHub Snapshot is a Chrome extension that helps users create reviewed GitHub commits from Overleaf project source snapshots. As a feature you can turn off in the extension options, it can also copy files from a GitHub branch into the Overleaf project and, if you tick the option "Make Overleaf match GitHub exactly", delete files from the project and replace uploaded files there, only after you confirm a preview.
 
