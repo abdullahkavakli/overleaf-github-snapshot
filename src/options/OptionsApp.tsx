@@ -268,10 +268,8 @@ export function Options(): React.ReactElement {
       <header className="page-header">
         <h1>Overleaf GitHub Snapshot</h1>
         <p className="lead">
-          Link each Overleaf project to its own GitHub repository and token.
-          When you open a linked project, the popup uses that project's
-          repository automatically. Settings and tokens are stored only in this
-          browser, and tokens are sent only to GitHub.
+          Link each Overleaf project to a GitHub repository. Tokens stay in
+          this browser and go only to GitHub.
         </p>
       </header>
 
