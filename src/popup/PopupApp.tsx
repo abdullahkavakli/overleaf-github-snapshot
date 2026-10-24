@@ -1270,7 +1270,7 @@ function PullFromGitHubSection({
         <>
           <label
             className="checkbox-row"
-            style={{ marginTop: 8, fontSize: 11.5 }}
+            style={{ marginTop: 8 }}
           >
             <input
               type="checkbox"
@@ -1280,7 +1280,7 @@ function PullFromGitHubSection({
             />
             <span>
               Also create new files in Overleaf
-              <div className="muted" style={{ fontSize: 11 }}>
+              <div className="muted hint-small">
                 {mirror
                   ? 'Always on while matching GitHub, for every file type.'
                   : 'Adds files that are only on GitHub, of the types allowed in Options.'}
@@ -1289,7 +1289,7 @@ function PullFromGitHubSection({
           </label>
           <label
             className="checkbox-row"
-            style={{ marginTop: 8, fontSize: 11.5 }}
+            style={{ marginTop: 8 }}
           >
             <input
               type="checkbox"
@@ -1299,7 +1299,7 @@ function PullFromGitHubSection({
             />
             <span>
               Make Overleaf match GitHub exactly
-              <div className="muted" style={{ fontSize: 11 }}>
+              <div className="muted hint-small">
                 Also deletes files not on GitHub and replaces uploaded files
                 that differ. You&apos;ll type <strong>delete</strong> to
                 confirm.
@@ -1321,7 +1321,7 @@ function PullFromGitHubSection({
       {mode === 'preview' && plan && previewText && (
         <div style={{ marginTop: 8 }}>
           {commitSha && (
-            <div className="muted" style={{ fontSize: 11.5 }}>
+            <div className="muted">
               GitHub version <code>{commitSha.substring(0, 7)}</code>
             </div>
           )}
@@ -1329,7 +1329,7 @@ function PullFromGitHubSection({
             <div
               className={`banner ${plan.notPulled.length === 0 ? 'success' : 'warning'}`}
               role="status"
-              style={{ marginTop: 6, fontSize: 11.5 }}
+              style={{ marginTop: 6 }}
             >
               {previewText.nothingToPull}
             </div>
@@ -1338,7 +1338,7 @@ function PullFromGitHubSection({
             <div
               className="banner warning"
               role="alert"
-              style={{ marginTop: 6, fontSize: 11.5 }}
+              style={{ marginTop: 6 }}
             >
               {previewText.replace}
               <PullPreviewList
@@ -1362,7 +1362,7 @@ function PullFromGitHubSection({
             <div
               className="banner warning"
               role="alert"
-              style={{ marginTop: 6, fontSize: 11.5 }}
+              style={{ marginTop: 6 }}
             >
               {previewText.mirror.replaceFilesNote}
               <PullPreviewList
@@ -1379,7 +1379,7 @@ function PullFromGitHubSection({
             <div
               className="banner error"
               role="alert"
-              style={{ marginTop: 6, fontSize: 11.5 }}
+              style={{ marginTop: 6 }}
             >
               <strong>{previewText.mirror.largeDeletionWarning}</strong>
             </div>
@@ -1388,7 +1388,7 @@ function PullFromGitHubSection({
             <div
               className="banner error"
               role="alert"
-              style={{ marginTop: 6, fontSize: 11.5 }}
+              style={{ marginTop: 6 }}
             >
               <strong>{previewText.mirror.rootDocWarning}</strong>
             </div>
@@ -1397,7 +1397,7 @@ function PullFromGitHubSection({
             <div
               className="banner warning"
               role="alert"
-              style={{ marginTop: 6, fontSize: 11.5 }}
+              style={{ marginTop: 6 }}
             >
               {previewText.mirror.deleteNote}
               <PullPreviewList
@@ -1439,7 +1439,7 @@ function PullFromGitHubSection({
             />
           )}
           {previewText.upToDate && (
-            <div className="muted" style={{ marginTop: 6, fontSize: 11.5 }}>
+            <div className="muted" style={{ marginTop: 6 }}>
               {previewText.upToDate}
             </div>
           )}
@@ -1471,7 +1471,7 @@ function PullFromGitHubSection({
                 <>
                   <label
                     htmlFor="pull-confirm-word"
-                    style={{ display: 'block', fontSize: 11.5, marginBottom: 4 }}
+                    style={{ display: 'block', marginBottom: 4 }}
                   >
                     To confirm, type <strong>{confirmationWord}</strong>
                   </label>
@@ -1534,14 +1534,14 @@ function PullFromGitHubSection({
       {mode === 'done' && summary && (
         <>
           {commitSha && (
-            <div className="muted" style={{ marginTop: 8, fontSize: 11.5 }}>
+            <div className="muted" style={{ marginTop: 8 }}>
               Pulled from GitHub commit <code>{commitSha.substring(0, 7)}</code>
             </div>
           )}
           <div
             className={`banner ${anyProblem ? 'warning' : 'success'}`}
             role="status"
-            style={{ marginTop: 6, fontSize: 12 }}
+            style={{ marginTop: 6 }}
           >
             {summary}
           </div>
@@ -1568,11 +1568,11 @@ function PullFromGitHubSection({
           />
           {(notInOverleaf.length > 0 || sourceSkipped.length > 0) && (
             <details style={{ marginTop: 4 }}>
-              <summary style={{ cursor: 'pointer', fontSize: 11.5 }}>
+              <summary className="text-small" style={{ cursor: 'pointer' }}>
                 Files not pulled (
                 {notInOverleaf.length + sourceSkipped.length})
               </summary>
-              <ul style={{ marginTop: 4, fontSize: 11.5, paddingLeft: 16 }}>
+              <ul className="text-small" style={{ marginTop: 4, paddingLeft: 16 }}>
                 {notInOverleaf.map((p) => (
                   <li key={`no-${p}`}>
                     <code>{p}</code> — not in Overleaf yet (tick{' '}
@@ -1628,10 +1628,10 @@ function PullResultList({
   if (!rows || rows.length === 0) return null;
   return (
     <details style={{ marginTop: 6 }}>
-      <summary style={{ cursor: 'pointer', fontSize: 11.5 }}>
+      <summary className="text-small" style={{ cursor: 'pointer' }}>
         {title} ({rows.length})
       </summary>
-      <ul style={{ marginTop: 4, fontSize: 11.5, paddingLeft: 16, overflowWrap: 'anywhere' }}>
+      <ul className="text-small" style={{ marginTop: 4, paddingLeft: 16, overflowWrap: 'anywhere' }}>
         {rows.map((r, i) => {
           const label = pullResultLabel(kind, r.status);
           const message = pullRowMessage(label, r.message);
@@ -1664,7 +1664,7 @@ function PullPreviewList({
   open?: boolean;
 }): React.ReactElement {
   const list = (
-    <ul style={{ margin: '4px 0 0', paddingLeft: 16, fontSize: 11.5, overflowWrap: 'anywhere' }}>
+    <ul className="text-small" style={{ margin: '4px 0 0', paddingLeft: 16, overflowWrap: 'anywhere' }}>
       {items.map((item) => (
         <li key={item.path}>
           <code>{item.path}</code>
@@ -1676,7 +1676,7 @@ function PullPreviewList({
   if (!summary && items.length <= PREVIEW_LIST_SHOWN_MAX) return list;
   return (
     <details style={{ marginTop: 6 }} open={open}>
-      <summary style={{ cursor: 'pointer', fontSize: 11.5 }}>
+      <summary className="text-small" style={{ cursor: 'pointer' }}>
         {summary ?? `Show all ${items.length} files`}
       </summary>
       {list}
@@ -1794,10 +1794,10 @@ function PreviewView({
           <em>Fetch from current Overleaf project</em>.
           <ul style={{ margin: '6px 0 0 16px', padding: 0 }}>
             {phase.snapshot.warnings.slice(0, 5).map((w, i) => (
-              <li key={i} style={{ fontSize: 11.5 }}>{w}</li>
+              <li key={i}>{w}</li>
             ))}
             {phase.snapshot.warnings.length > 5 && (
-              <li style={{ fontSize: 11.5 }}>
+              <li>
                 …and {phase.snapshot.warnings.length - 5} more
               </li>
             )}
