@@ -574,6 +574,7 @@ input[type='text']:focus {
 
 .checkbox-row input[type='checkbox'] {
   margin: 3px 0 0;
+  accent-color: var(--accent);
 }
 
 .delete-warning {
