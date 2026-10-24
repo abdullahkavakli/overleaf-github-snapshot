@@ -3,7 +3,7 @@
   /* Mintlify-style palette, shared with the popup. --accent is a deeper mint
      than the brand's #00b48a so focus rings and ticked boxes keep 3:1 on
      white. */
-  --bg: #ffffff;
+  --bg: #fafafa;
   --bg-subtle: #f7f7f7;
   --border: #e5e5e5;
   --text: #1c1c1e;
