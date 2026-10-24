@@ -5,7 +5,10 @@
      white. */
   --bg: #fafafa;
   --toggle-thumb: #ffffff;
-  --bg-subtle: #f7f7f7;
+  /* Flat design: --bg-subtle fills inputs, the nav highlight and the toggle
+     track; --surface-strong fills secondary buttons. */
+  --bg-subtle: #ebebeb;
+  --surface-strong: #e3e3e3;
   --border: #e5e5e5;
   --text: #1c1c1e;
   --text-muted: #5a5a5c;
@@ -16,7 +19,7 @@
   --accent-on: #ffffff;
   --success: #1a7f37;
   --success-bg: #dafbe1;
-  --danger: #cf222e;
+  --danger: #c1121f;
   --danger-bg: #ffebe9;
   --warning-bg: #fff8c5;
   --warning-text: #7d4e00;
@@ -35,8 +38,9 @@
     /* The design defines no dark palette; this inverts it: near-black
        canvas, white primary pill, the brand mint as accent. */
     --bg: #0a0a0a;
-    --toggle-thumb: #2e2e30;
+    --toggle-thumb: #3a3a3c;
     --bg-subtle: #1c1c1e;
+    --surface-strong: #262628;
     --border: #2e2e30;
     --text: #ededed;
     --text-muted: #b3b3b3;
@@ -59,8 +63,9 @@
   /* The design defines no dark palette; this inverts it: near-black
      canvas, white primary pill, the brand mint as accent. */
   --bg: #0a0a0a;
-  --toggle-thumb: #2e2e30;
+  --toggle-thumb: #3a3a3c;
   --bg-subtle: #1c1c1e;
+  --surface-strong: #262628;
   --border: #2e2e30;
   --text: #ededed;
   --text-muted: #b3b3b3;
@@ -99,22 +104,81 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-.container {
-  max-width: 720px;
+/* ── Layout: side navigation + content ────────────────────── */
+
+.page {
+  max-width: 1040px;
   margin: 0 auto;
-  padding: 40px 24px 80px;
+  padding: 48px 24px 96px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 48px;
+  align-items: flex-start;
+}
+
+.side-nav {
+  flex: 1 1 200px;
+  max-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+@media (min-width: 880px) {
+  .side-nav {
+    position: sticky;
+    top: 48px;
+  }
+}
+
+.side-nav .product {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-strong);
+  padding: 0 12px 16px;
+}
+
+.side-nav a {
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--text-muted);
+  text-decoration: none;
+  transition: background 0.15s, color 0.15s;
+}
+
+.side-nav a:hover {
+  color: var(--text-strong);
+  text-decoration: none;
+}
+
+.side-nav a[aria-current='location'] {
+  background: var(--bg-subtle);
+  color: var(--text-strong);
+  font-weight: 500;
+}
+
+.content {
+  flex: 999 1 560px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 56px;
 }
 
 /* ── Typography ─────────────────────────────────────────────── */
 
 .page-header {
-  margin-bottom: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 h1 {
-  margin: 0 0 8px;
+  margin: 0;
   font-size: 28px;
   font-weight: 600;
+  letter-spacing: -0.02em;
   line-height: 1.25;
   color: var(--text-strong);
 }
@@ -126,22 +190,32 @@ h1 {
   line-height: 1.5;
 }
 
+/* ── Sections: flat, separated by spacing only ─────────────── */
+
+section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  scroll-margin-top: 48px;
+}
+
+section > .banner {
+  margin-bottom: 0;
+}
+
 section h2 {
-  margin: 0 0 16px;
+  margin: 0;
   font-size: 18px;
   font-weight: 600;
   line-height: 1.4;
   color: var(--text-strong);
 }
 
-/* ── Section cards ──────────────────────────────────────────── */
-
-section {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 24px;
-  margin-bottom: 16px;
+.section-note {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
 }
 
 /* ── Fields ─────────────────────────────────────────────────── */
@@ -172,7 +246,7 @@ section {
   font-weight: 400;
 }
 
-.field .hint {
+.hint {
   font-size: 13px;
   line-height: 1.4;
   color: var(--text-muted);
@@ -188,11 +262,11 @@ section {
   font-size: 14px;
   line-height: 1.4;
   padding: 9px 12px;
-  background: var(--bg);
+  background: var(--bg-subtle);
   color: var(--text);
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: 8px;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: box-shadow 0.15s;
 }
 
 .field input[type='text'].mono,
@@ -202,20 +276,12 @@ section {
   font-size: 13px;
 }
 
-.field input[type='text']:hover,
-.field input[type='password']:hover,
-.field select:hover,
-.field textarea:hover {
-  border-color: var(--text-muted);
-}
-
 .field input[type='text']:focus-visible,
 .field input[type='password']:focus-visible,
 .field select:focus-visible,
 .field textarea:focus-visible {
   outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
 }
 
 .field textarea {
@@ -228,7 +294,7 @@ section {
 
 .field input[aria-invalid='true'],
 .field textarea[aria-invalid='true'] {
-  border-color: var(--danger);
+  box-shadow: 0 0 0 1px var(--danger);
 }
 
 /* ── Grid rows ──────────────────────────────────────────────── */
@@ -249,7 +315,7 @@ section {
   .row.three {
     grid-template-columns: 1fr;
   }
-  .container {
+  .page {
     padding: 28px 16px 64px;
   }
 }
@@ -269,21 +335,19 @@ section {
 }
 
 .token-row .toggle {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 9999px;
+  background: var(--surface-strong);
+  border: 0;
+  border-radius: 8px;
   padding: 0 16px;
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  color: var(--text-muted);
-  transition: color 0.15s, background 0.15s, border-color 0.15s;
+  color: var(--text);
+  transition: color 0.15s, background 0.15s;
 }
 
 .token-row .toggle:hover {
-  color: var(--text);
-  background: var(--bg-subtle);
-  border-color: var(--text-muted);
+  background: color-mix(in srgb, var(--text) 8%, var(--surface-strong));
 }
 
 .token-row .toggle:focus-visible {
@@ -316,14 +380,14 @@ section {
 
 .checkbox-row label {
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--text);
   cursor: pointer;
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
 .checkbox-row label .hint {
-  margin-top: 4px;
+  margin-top: 2px;
   font-weight: 400;
 }
 
@@ -339,25 +403,31 @@ section {
 
 .button {
   appearance: none;
-  border: 1px solid var(--border);
-  background: transparent;
+  border: 0;
+  background: var(--surface-strong);
   color: var(--text);
   font-family: var(--font-sans);
   font-size: 14px;
   font-weight: 600;
   line-height: 1.3;
-  padding: 10px 20px;
-  border-radius: 9999px;
+  min-height: 40px;
+  padding: 10px 18px;
+  border-radius: 8px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+}
+
+.button.small {
+  min-height: 36px;
+  padding: 8px 14px;
+  font-size: 13px;
 }
 
 .button:hover:not(:disabled) {
-  background: var(--bg-subtle);
-  border-color: var(--text-muted);
+  background: color-mix(in srgb, var(--text) 8%, var(--surface-strong));
 }
 
 .button:focus-visible {
@@ -373,12 +443,15 @@ section {
 .button.primary {
   background: var(--accent-bg);
   color: var(--accent-on);
-  border-color: var(--accent-bg);
 }
 
 .button.primary:hover:not(:disabled) {
   background: var(--accent-hover);
-  border-color: var(--accent-hover);
+}
+
+/* Reset: the label is red, the fill stays neutral. */
+.button.destructive {
+  color: var(--danger);
 }
 
 /* The pull button while "Make Overleaf match GitHub exactly" is ticked: that
@@ -386,9 +459,8 @@ section {
    or focused, then turns into a red outline. */
 .button.danger:hover:not(:disabled),
 .button.danger:focus-visible {
-  background: var(--bg);
   color: var(--danger);
-  border-color: var(--danger);
+  box-shadow: inset 0 0 0 1px var(--danger);
 }
 
 .button.danger:focus-visible {
@@ -408,19 +480,16 @@ section {
 .banner.success {
   background: var(--success-bg);
   color: var(--success);
-  border: 1px solid color-mix(in srgb, var(--success), transparent 70%);
 }
 
 .banner.error {
   background: var(--danger-bg);
   color: var(--danger);
-  border: 1px solid color-mix(in srgb, var(--danger), transparent 70%);
 }
 
 .banner.info {
   background: var(--warning-bg);
   color: var(--warning-text);
-  border: 1px solid color-mix(in srgb, var(--warning-text), transparent 70%);
 }
 
 /* ── Test result ───────────────────────────────────────────── */
@@ -432,17 +501,14 @@ section {
   font-size: 13px;
   padding: 14px 16px;
   border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--bg);
+  background: var(--bg-subtle);
 }
 
 .test-result.ok {
-  border-color: color-mix(in srgb, var(--success), transparent 60%);
   background: color-mix(in srgb, var(--success-bg), transparent 50%);
 }
 
 .test-result.fail {
-  border-color: color-mix(in srgb, var(--danger), transparent 60%);
   background: color-mix(in srgb, var(--danger-bg), transparent 50%);
 }
 
@@ -522,8 +588,7 @@ code {
   font-family: var(--font-mono);
   font-size: 12px;
   background: var(--bg-subtle);
-  border: 1px solid var(--border);
-  padding: 0 4px;
+  padding: 1px 5px;
   border-radius: 4px;
 }
 
@@ -544,6 +609,55 @@ code {
   }
 }
 
+/* ── Mappings ───────────────────────────────────────────────── */
+
+.mapping-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.mapping-item {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mapping-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.mapping-info {
+  flex: 1 1 280px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mapping-info .hint {
+  margin: 0;
+}
+
+.mapping-item code {
+  background: none;
+  padding: 0;
+}
+
+.mapping-editor {
+  margin-top: 8px;
+}
+
+.editor-heading {
+  margin: 0 0 16px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
 /* ── Live sync section ─────────────────────────────────────── */
 
 .experimental-section .field textarea:disabled,
@@ -552,39 +666,61 @@ code {
 }
 
 .experimental-suboptions {
-  margin-top: 4px;
-  padding-left: 14px;
-  border-left: 2px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 28px 32px;
   animation: ofs-disclose 200ms ease-out;
   transform-origin: top left;
+}
+
+.sync-col {
+  flex: 1 1 260px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 
-/* A sub-option of a Popup display switch, shown only while the switch is on. */
+.group-heading {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.group-heading.spaced {
+  margin-top: 12px;
+}
+
+/* A sub-option of a Popup display switch, shown only while the switch is on.
+   Indented to line up with its parent's label. */
 .display-suboptions {
-  margin-top: 14px;
-  padding-left: 14px;
-  border-left: 2px solid var(--border);
+  margin-left: 32px;
   animation: ofs-disclose 200ms ease-out;
   transform-origin: top left;
 }
 
-/* One bordered card per live sync sub-feature so they read as
-   independently togglable features rather than a flat option list. */
-.experimental-feature-card {
-  margin-top: 0;
-  padding: 16px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
+/* Developer tools */
+
+.dev-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
-.experimental-feature-heading {
-  margin: 0 0 12px;
-  font-size: 14px;
+.dev-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dev-panel h3 {
+  margin: 0;
+  font-size: 15px;
   font-weight: 600;
+  color: var(--text-strong);
 }
 
 @keyframes ofs-disclose {
@@ -618,23 +754,33 @@ code {
   }
 }
 
-/* Theme switch: Mintlify's pill toggle (toggle-monthly-yearly) with three
-   options. The track is the surface colour; the selected option sits on a
-   raised pill. */
+/* Theme switch: a flat segmented control. The track is the surface colour;
+   the selected option sits on a lighter fill. */
+.theme-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+
+.theme-row .field-label {
+  min-width: 80px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
 .theme-toggle {
   display: inline-flex;
-  gap: 2px;
+  gap: 4px;
   padding: 4px;
   background: var(--bg-subtle);
-  border: 1px solid var(--border);
-  border-radius: 9999px;
-  align-self: flex-start;
+  border-radius: 10px;
 }
 
 .theme-toggle label {
   position: relative;
   padding: 6px 16px;
-  border-radius: 9999px;
+  border-radius: 7px;
   font-size: 13px;
   font-weight: 500;
   color: var(--text-muted);
@@ -649,7 +795,6 @@ code {
 .theme-toggle label.active {
   background: var(--toggle-thumb);
   color: var(--text-strong);
-  box-shadow: 0 1px 2px rgba(10, 10, 10, 0.08);
 }
 
 .theme-toggle input {
@@ -666,7 +811,8 @@ code {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .theme-toggle label {
+  .theme-toggle label,
+  .side-nav a {
     transition: none;
   }
 }

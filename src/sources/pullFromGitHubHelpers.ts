@@ -1700,7 +1700,7 @@ export function pullPlanChangeCount(plan: PullPlan): number {
 
 // True when the plan would delete something in Overleaf or replace an
 // uploaded file there. Such a pull always needs the typed `delete`, whatever
-// "Ask me to confirm before replacing files in Overleaf" says.
+// "Ask me to type 'replace' before replacing files" says.
 export function pullHasDestructiveChanges(plan: PullPlan): boolean {
   return plan.mirror !== null && (plan.mirror.deletions.length > 0 || plan.mirror.replaceFiles.length > 0);
 }

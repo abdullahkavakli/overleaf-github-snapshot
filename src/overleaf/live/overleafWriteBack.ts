@@ -239,7 +239,7 @@ export async function writeSelectedFilesBackToOverleaf(
     return [...rejected, ...written];
   }
 
-  // Standalone (Options → Developer write-back test): this call takes the
+  // Standalone (Options → Developer tools → Write-back test): this call takes the
   // pull lock and owns the session. The session opens first, so a tab that
   // is outdated or unreachable fails before the ZIP backup downloads the
   // whole project; the backup still comes before the first read or write.

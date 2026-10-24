@@ -77,6 +77,16 @@ const THEME_OPTIONS: Array<[ThemePreference, string]> = [
   ['dark', 'Dark'],
 ];
 
+// Section id (also the nav anchor) and nav label, in page order.
+const NAV_SECTIONS: Array<[string, string]> = [
+  ['mappings', 'Mappings'],
+  ['appearance', 'Appearance'],
+  ['popup', 'Popup display'],
+  ['sync', 'Live sync'],
+  ['dev', 'Developer tools'],
+  ['reset', 'Reset'],
+];
+
 type SaveState =
   | { kind: 'idle' }
   | { kind: 'saving' }
@@ -105,6 +115,47 @@ export function Options(): React.ReactElement {
   const [expSave, setExpSave] = useState<SaveState>({ kind: 'idle' });
   const [uiPrefs, setUiPrefs] = useState<UIPreferences>(DEFAULT_UI_PREFERENCES);
   const [uiPrefsSaveError, setUiPrefsSaveError] = useState<string | null>(null);
+
+  const [devOpen, setDevOpen] = useState<{ writeBack: boolean; pull: boolean }>({
+    writeBack: false,
+    pull: false,
+  });
+  // The developer panels only exist while their feature toggles are on.
+  const devToolsAvailable =
+    experimental.experimentalLiveSyncEnabled && experimental.overleafWriteBackEnabled;
+  const toggleDevPanel = (panel: 'writeBack' | 'pull') =>
+    setDevOpen((current) => ({ ...current, [panel]: !current[panel] }));
+
+  // Nav highlight: the clicked section, then whichever section is under the
+  // top of the window while scrolling (the last one at the bottom of the page).
+  const [activeSection, setActiveSection] = useState<string>(
+    () => NAV_SECTIONS.find(([id]) => id === window.location.hash.slice(1))?.[0] ?? 'mappings',
+  );
+  const clickLockUntil = useRef<number>(0);
+  const selectSection = (id: string) => {
+    setActiveSection(id);
+    // Ignore scroll events while the browser jumps to the anchor.
+    clickLockUntil.current = Date.now() + 800;
+  };
+  useEffect(() => {
+    const onScroll = () => {
+      if (Date.now() < clickLockUntil.current) return;
+      const atBottom =
+        window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
+      let current = NAV_SECTIONS[0][0];
+      if (atBottom) {
+        current = NAV_SECTIONS[NAV_SECTIONS.length - 1][0];
+      } else {
+        for (const [id] of NAV_SECTIONS) {
+          const el = document.getElementById(id);
+          if (el && el.getBoundingClientRect().top <= 120) current = id;
+        }
+      }
+      setActiveSection(current);
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
 
   const reload = async () => {
     const map = await getProjectLinkMap();
@@ -275,412 +326,453 @@ export function Options(): React.ReactElement {
   const entries = Object.entries(links);
 
   return (
-    <div className="container">
-      <header className="page-header">
-        <h1>Overleaf GitHub Snapshot</h1>
-        <p className="lead">
-          Link each Overleaf project to a GitHub repository. Tokens stay in
-          this browser and go only to GitHub.
-        </p>
-      </header>
+    <div className="page">
+      <nav className="side-nav" aria-label="Settings sections">
+        <span className="product">Overleaf GitHub Snapshot</span>
+        {NAV_SECTIONS.map(([id, label]) => (
+          <a
+            key={id}
+            href={`#${id}`}
+            aria-current={activeSection === id ? 'location' : undefined}
+            onClick={() => selectSection(id)}
+          >
+            {label}
+          </a>
+        ))}
+      </nav>
 
-      <section aria-labelledby="sec-mappings">
-        <h2 id="sec-mappings">Project → repository mappings</h2>
+      <div className="content">
+        <header className="page-header">
+          <h1>Settings</h1>
+          <p className="lead">
+            Link each Overleaf project to a GitHub repository. Tokens stay in
+            this browser and go only to GitHub.
+          </p>
+        </header>
 
-        {!loaded ? (
-          <p className="lead">Loading…</p>
-        ) : entries.length === 0 ? (
-          <div className="banner info">
-            No mappings yet. Open an Overleaf project tab and the popup will
-            prompt you to link it, or add one manually below.
+        <section id="mappings" aria-labelledby="sec-mappings">
+          <h2 id="sec-mappings">Project → repository mappings</h2>
+
+          {!loaded ? (
+            <p className="lead">Loading…</p>
+          ) : entries.length === 0 ? (
+            <div className="banner info">
+              No mappings yet. Open an Overleaf project tab and the popup will
+              prompt you to link it, or add one manually below.
+            </div>
+          ) : (
+            <div className="mapping-list">
+              {entries.map(([projectId, link]) => (
+                <MappingRow
+                  key={projectId}
+                  projectId={projectId}
+                  link={link}
+                  isEditing={
+                    editing !== null && !editing.isNew && editing.projectId === projectId
+                  }
+                  onEdit={() => startEdit(projectId)}
+                  onRemove={() => removeMapping(projectId)}
+                />
+              ))}
+            </div>
+          )}
+
+          {editing ? (
+            <MappingEditor
+              state={editing}
+              error={editError}
+              onChange={setEditing}
+              onCancel={() => setEditing(null)}
+              onSave={saveEdit}
+            />
+          ) : (
+            <div className="actions">
+              <button type="button" className="button primary" onClick={startAdd}>
+                Add mapping
+              </button>
+            </div>
+          )}
+        </section>
+
+        <section id="appearance" aria-labelledby="sec-appearance">
+          <h2 id="sec-appearance">Appearance</h2>
+          <div className="theme-row">
+            <span id="theme-label" className="field-label">
+              Theme
+            </span>
+            <div className="theme-toggle" role="radiogroup" aria-labelledby="theme-label">
+              {THEME_OPTIONS.map(([value, label]) => (
+                <label key={value} className={uiPrefs.theme === value ? 'active' : undefined}>
+                  <input
+                    type="radio"
+                    name="theme"
+                    value={value}
+                    checked={uiPrefs.theme === value}
+                    onChange={() => void updateUiPrefs({ ...uiPrefs, theme: value })}
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
           </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {entries.map(([projectId, link]) => (
-              <MappingRow
-                key={projectId}
-                projectId={projectId}
-                link={link}
-                isEditing={
-                  editing !== null && !editing.isNew && editing.projectId === projectId
-                }
-                onEdit={() => startEdit(projectId)}
-                onRemove={() => removeMapping(projectId)}
-              />
-            ))}
-          </div>
-        )}
+          <p className="section-note">
+            For the popup and this page. System follows your computer's setting.
+          </p>
+        </section>
 
-        {editing ? (
-          <MappingEditor
-            state={editing}
-            error={editError}
-            onChange={setEditing}
-            onCancel={() => setEditing(null)}
-            onSave={saveEdit}
-          />
-        ) : (
-          <div className="actions" style={{ marginTop: 16 }}>
-            <button type="button" className="button primary" onClick={startAdd}>
-              Add mapping
+        <section id="popup" aria-labelledby="sec-display">
+          <h2 id="sec-display">Popup display</h2>
+          <div className="checkbox-row">
+            <input
+              id="manualZipUploadEnabled"
+              type="checkbox"
+              checked={uiPrefs.manualZipUploadEnabled}
+              aria-controls="manual-zip-suboptions"
+              aria-expanded={uiPrefs.manualZipUploadEnabled}
+              onChange={(e) =>
+                void updateUiPrefs({
+                  ...uiPrefs,
+                  manualZipUploadEnabled: e.target.checked,
+                })
+              }
+            />
+            <label htmlFor="manualZipUploadEnabled">
+              Enable manual ZIP upload
+              <div className="hint">
+                Lets you upload a source ZIP you downloaded from Overleaf when
+                the automatic download doesn't work.
+              </div>
+            </label>
+          </div>
+          {uiPrefs.manualZipUploadEnabled && (
+            <div id="manual-zip-suboptions" className="display-suboptions">
+              <div className="checkbox-row">
+                <input
+                  id="alwaysShowManualUpload"
+                  type="checkbox"
+                  checked={uiPrefs.alwaysShowManualUpload}
+                  onChange={(e) =>
+                    void updateUiPrefs({
+                      ...uiPrefs,
+                      alwaysShowManualUpload: e.target.checked,
+                    })
+                  }
+                />
+                <label htmlFor="alwaysShowManualUpload">
+                  Always show Manual ZIP upload
+                  <div className="hint">
+                    By default the popup hides the <em>Manual ZIP upload</em>{' '}
+                    section until <em>Fetch from current Overleaf project</em>{' '}
+                    fails or no Overleaf tab is open. Turn this on to always
+                    show it.
+                  </div>
+                </label>
+              </div>
+            </div>
+          )}
+          {uiPrefsSaveError && (
+            <div className="banner error" role="alert">
+              Save failed: {uiPrefsSaveError}
+            </div>
+          )}
+        </section>
+
+        <section id="sync" aria-labelledby="sec-experimental" className="experimental-section">
+          <h2 id="sec-experimental">Overleaf Live Sync</h2>
+
+          <div className="checkbox-row">
+            <input
+              id="experimentalLiveSyncEnabled"
+              type="checkbox"
+              checked={experimental.experimentalLiveSyncEnabled}
+              aria-controls="experimental-suboptions"
+              aria-expanded={experimental.experimentalLiveSyncEnabled}
+              onChange={(e) =>
+                setExperimental({
+                  ...experimental,
+                  experimentalLiveSyncEnabled: e.target.checked,
+                })
+              }
+            />
+            <label htmlFor="experimentalLiveSyncEnabled">
+              Enable live sync
+              <div className="hint">
+                Shows the features below, each with its own switch. When this
+                is off, none of them run.
+              </div>
+            </label>
+          </div>
+
+          {experimental.experimentalLiveSyncEnabled && (
+            <div id="experimental-suboptions" className="experimental-suboptions">
+              <div className="sync-col">
+                <h3 className="group-heading">Overleaf → GitHub</h3>
+                <div className="checkbox-row">
+                  <input
+                    id="liveReadOnlyPullEnabled"
+                    type="checkbox"
+                    checked={experimental.liveReadOnlyPullEnabled}
+                    onChange={(e) =>
+                      setExperimental({
+                        ...experimental,
+                        liveReadOnlyPullEnabled: e.target.checked,
+                      })
+                    }
+                  />
+                  <label htmlFor="liveReadOnlyPullEnabled">
+                    Read from the open Overleaf tab
+                    <div className="hint">
+                      Reads your project from the tab instead of downloading a
+                      ZIP. Never changes your Overleaf project.
+                    </div>
+                  </label>
+                </div>
+
+                <h3 className="group-heading spaced">Not ready yet</h3>
+                <div className="checkbox-row">
+                  <input
+                    id="localReplicaEnabled"
+                    type="checkbox"
+                    checked={experimental.localReplicaEnabled}
+                    onChange={(e) =>
+                      setExperimental({
+                        ...experimental,
+                        localReplicaEnabled: e.target.checked,
+                      })
+                    }
+                  />
+                  <label htmlFor="localReplicaEnabled">
+                    Local replica prototype
+                    <div className="hint">This setting does nothing for now.</div>
+                  </label>
+                </div>
+              </div>
+
+              <div className="sync-col">
+                <h3 className="group-heading">GitHub → Overleaf</h3>
+                <div className="checkbox-row">
+                  <input
+                    id="overleafWriteBackEnabled"
+                    type="checkbox"
+                    checked={experimental.overleafWriteBackEnabled}
+                    onChange={(e) =>
+                      setExperimental({
+                        ...experimental,
+                        overleafWriteBackEnabled: e.target.checked,
+                      })
+                    }
+                  />
+                  <label htmlFor="overleafWriteBackEnabled">
+                    Enable Overleaf write-back
+                    <div className="hint">
+                      Adds <em>Pull from GitHub into Overleaf</em> to the popup.
+                    </div>
+                  </label>
+                </div>
+
+                {experimental.overleafWriteBackEnabled && (
+                  <>
+                    <div className="checkbox-row">
+                      <input
+                        id="requireZipBackupBeforeWriteBack"
+                        type="checkbox"
+                        checked={experimental.requireZipBackupBeforeWriteBack}
+                        onChange={(e) =>
+                          setExperimental({
+                            ...experimental,
+                            requireZipBackupBeforeWriteBack: e.target.checked,
+                          })
+                        }
+                      />
+                      <label htmlFor="requireZipBackupBeforeWriteBack">
+                        Check that Overleaf can export the project first
+                        <div className="hint">
+                          Downloads the project's ZIP before writing and stops
+                          if that fails. The ZIP isn't saved; to undo a pull,
+                          use Overleaf's History.
+                        </div>
+                      </label>
+                    </div>
+
+                    <div className="checkbox-row">
+                      <input
+                        id="requireConfirmationBeforeWriteBack"
+                        type="checkbox"
+                        checked={experimental.requireConfirmationBeforeWriteBack}
+                        onChange={(e) =>
+                          setExperimental({
+                            ...experimental,
+                            requireConfirmationBeforeWriteBack: e.target.checked,
+                          })
+                        }
+                      />
+                      <label htmlFor="requireConfirmationBeforeWriteBack">
+                        Ask me to type 'replace' before replacing files
+                        <div className="hint">
+                          A pull lists the files it would replace and writes
+                          nothing until you type it.
+                        </div>
+                      </label>
+                    </div>
+
+                    <div className="checkbox-row">
+                      <input
+                        id="allowBinaryWriteBack"
+                        type="checkbox"
+                        checked={experimental.allowBinaryWriteBack}
+                        onChange={(e) =>
+                          setExperimental({
+                            ...experimental,
+                            allowBinaryWriteBack: e.target.checked,
+                          })
+                        }
+                      />
+                      <label htmlFor="allowBinaryWriteBack">
+                        Allow uploading new images and other non-text files
+                        <div className="hint">
+                          Uploaded when <em>Also create new files in Overleaf</em>{' '}
+                          is ticked. Files already in Overleaf are never
+                          replaced.
+                        </div>
+                      </label>
+                    </div>
+
+                    <div className="checkbox-row">
+                      <input
+                        id="includeAllFileTypes"
+                        type="checkbox"
+                        checked={experimental.includeAllFileTypes}
+                        onChange={(e) =>
+                          setExperimental({
+                            ...experimental,
+                            includeAllFileTypes: e.target.checked,
+                          })
+                        }
+                      />
+                      <label htmlFor="includeAllFileTypes">
+                        Include all file types
+                        <div className="hint">
+                          Copies every text file, whatever its type. The list
+                          below is not used.
+                        </div>
+                      </label>
+                    </div>
+
+                    <div className="field">
+                      <label htmlFor="writeBackExts">Allowed write-back extensions</label>
+                      <textarea
+                        id="writeBackExts"
+                        value={extText}
+                        onChange={(e) => setExtText(e.target.value)}
+                        disabled={experimental.includeAllFileTypes}
+                        spellCheck={false}
+                        style={{ minHeight: 110 }}
+                      />
+                      <div className="hint">
+                        One extension per line. Defaults: <code>.tex</code>,{' '}
+                        <code>.bib</code>, <code>.cls</code>, <code>.sty</code>,{' '}
+                        <code>.bst</code>, <code>.md</code>, <code>.txt</code>.
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div className="actions">
+            <button
+              type="button"
+              className="button primary"
+              onClick={saveExperimental}
+              disabled={expSave.kind === 'saving'}
+              aria-busy={expSave.kind === 'saving'}
+            >
+              {expSave.kind === 'saving' ? (
+                <>
+                  <span className="spinner" aria-hidden="true" />
+                  Saving…
+                </>
+              ) : (
+                'Save live sync settings'
+              )}
+            </button>
+            <span
+              className={
+                expSave.kind === 'saved'
+                  ? 'save-status ok'
+                  : expSave.kind === 'error'
+                    ? 'save-status err'
+                    : 'save-status'
+              }
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              {expSave.kind === 'saved' && 'Saved.'}
+              {expSave.kind === 'error' && `Save failed: ${expSave.message}`}
+            </span>
+          </div>
+        </section>
+
+        <section id="dev" aria-labelledby="sec-dev">
+          <h2 id="sec-dev">Developer tools</h2>
+          {devToolsAvailable ? (
+            <>
+              <p className="section-note">For testing by hand. Use a throwaway project.</p>
+              <div className="dev-buttons">
+                <button
+                  type="button"
+                  className="button"
+                  aria-expanded={devOpen.writeBack}
+                  aria-controls="dev-writeback-panel"
+                  onClick={() => toggleDevPanel('writeBack')}
+                >
+                  {devOpen.writeBack ? 'Close write-back test' : 'Open write-back test'}
+                </button>
+                <button
+                  type="button"
+                  className="button"
+                  aria-expanded={devOpen.pull}
+                  aria-controls="dev-pull-panel"
+                  onClick={() => toggleDevPanel('pull')}
+                >
+                  {devOpen.pull ? 'Close pull test' : 'Open pull test'}
+                </button>
+              </div>
+              {/* Hidden, not unmounted, so a half-done test (and a pull
+                  preview's open Overleaf session) survives closing it. */}
+              <div id="dev-writeback-panel" hidden={!devOpen.writeBack}>
+                <WriteBackDevPanel experimental={experimental} />
+              </div>
+              {/* Mounted once the mappings are read: it picks its first project
+                  when it mounts. */}
+              {loaded && (
+                <div id="dev-pull-panel" hidden={!devOpen.pull}>
+                  <PullFromGitHubDevPanel links={links} experimental={experimental} />
+                </div>
+              )}
+            </>
+          ) : (
+            <p className="section-note">
+              The test tools appear while <em>Enable live sync</em> and{' '}
+              <em>Enable Overleaf write-back</em> are both on.
+            </p>
+          )}
+        </section>
+
+        <section id="reset" aria-labelledby="sec-reset">
+          <h2 id="sec-reset">Reset</h2>
+          <p className="section-note">
+            Removes every linked project and saved token and resets all
+            settings. Nothing on GitHub or Overleaf is changed.
+          </p>
+          <div className="actions">
+            <button type="button" className="button destructive" onClick={resetAll}>
+              Reset all settings
             </button>
           </div>
-        )}
-      </section>
-
-      <section aria-labelledby="sec-appearance">
-        <h2 id="sec-appearance">Appearance</h2>
-        <div className="field">
-          <span id="theme-label" className="field-label">
-            Theme
-          </span>
-          <div className="theme-toggle" role="radiogroup" aria-labelledby="theme-label">
-            {THEME_OPTIONS.map(([value, label]) => (
-              <label key={value} className={uiPrefs.theme === value ? 'active' : undefined}>
-                <input
-                  type="radio"
-                  name="theme"
-                  value={value}
-                  checked={uiPrefs.theme === value}
-                  onChange={() => void updateUiPrefs({ ...uiPrefs, theme: value })}
-                />
-                {label}
-              </label>
-            ))}
-          </div>
-          <div className="hint">
-            For the popup and this page. System follows your computer's setting.
-          </div>
-        </div>
-      </section>
-
-      <section aria-labelledby="sec-display">
-        <h2 id="sec-display">Popup display</h2>
-        <div className="checkbox-row">
-          <input
-            id="manualZipUploadEnabled"
-            type="checkbox"
-            checked={uiPrefs.manualZipUploadEnabled}
-            aria-controls="manual-zip-suboptions"
-            aria-expanded={uiPrefs.manualZipUploadEnabled}
-            onChange={(e) =>
-              void updateUiPrefs({
-                ...uiPrefs,
-                manualZipUploadEnabled: e.target.checked,
-              })
-            }
-          />
-          <label htmlFor="manualZipUploadEnabled">
-            Enable manual ZIP upload
-            <div className="hint">
-              Lets you upload a source ZIP you downloaded from Overleaf (File →
-              Download → Download as source (.zip)) when the automatic download
-              doesn't work.
-            </div>
-          </label>
-        </div>
-        {uiPrefs.manualZipUploadEnabled && (
-          <div id="manual-zip-suboptions" className="display-suboptions">
-            <div className="checkbox-row">
-              <input
-                id="alwaysShowManualUpload"
-                type="checkbox"
-                checked={uiPrefs.alwaysShowManualUpload}
-                onChange={(e) =>
-                  void updateUiPrefs({
-                    ...uiPrefs,
-                    alwaysShowManualUpload: e.target.checked,
-                  })
-                }
-              />
-              <label htmlFor="alwaysShowManualUpload">
-                Always show Manual ZIP upload
-                <div className="hint">
-                  By default the popup hides the <em>Manual ZIP upload</em>{' '}
-                  section until <em>Fetch from current Overleaf project</em>{' '}
-                  fails or no Overleaf tab is open. Turn this on to always
-                  show it.
-                </div>
-              </label>
-            </div>
-          </div>
-        )}
-        {uiPrefsSaveError && (
-          <div className="banner error" role="alert" style={{ marginTop: 10 }}>
-            Save failed: {uiPrefsSaveError}
-          </div>
-        )}
-      </section>
-
-      <section aria-labelledby="sec-experimental" className="experimental-section">
-        <h2 id="sec-experimental">Overleaf Live Sync</h2>
-
-        <div className="checkbox-row">
-          <input
-            id="experimentalLiveSyncEnabled"
-            type="checkbox"
-            checked={experimental.experimentalLiveSyncEnabled}
-            aria-controls="experimental-suboptions"
-            aria-expanded={experimental.experimentalLiveSyncEnabled}
-            onChange={(e) =>
-              setExperimental({
-                ...experimental,
-                experimentalLiveSyncEnabled: e.target.checked,
-              })
-            }
-          />
-          <label htmlFor="experimentalLiveSyncEnabled">
-            Enable live sync
-            <div className="hint">
-              Shows the features below, each with its own switch.
-              Overleaf write-back starts on; the others start off. When this
-              is off, none of them run.
-            </div>
-          </label>
-        </div>
-
-        {experimental.experimentalLiveSyncEnabled && (
-          <div id="experimental-suboptions" className="experimental-suboptions">
-
-            <div className="experimental-feature-card">
-              <h3 className="experimental-feature-heading">
-                Read from the open Overleaf tab (Overleaf → GitHub)
-              </h3>
-              <div className="checkbox-row">
-                <input
-                  id="liveReadOnlyPullEnabled"
-                  type="checkbox"
-                  checked={experimental.liveReadOnlyPullEnabled}
-                  onChange={(e) =>
-                    setExperimental({
-                      ...experimental,
-                      liveReadOnlyPullEnabled: e.target.checked,
-                    })
-                  }
-                />
-                <label htmlFor="liveReadOnlyPullEnabled">
-                  Enable reading from the Overleaf tab
-                  <div className="hint">
-                    Adds a popup button that reads your project from the open
-                    Overleaf tab instead of downloading a ZIP, then shows the
-                    changes to commit. Slower on large projects. Never changes
-                    your Overleaf project.
-                  </div>
-                </label>
-              </div>
-            </div>
-
-            <div className="experimental-feature-card">
-              <h3 className="experimental-feature-heading">
-                Overleaf write-back (GitHub → Overleaf)
-              </h3>
-              <div className="checkbox-row">
-                <input
-                  id="overleafWriteBackEnabled"
-                  type="checkbox"
-                  checked={experimental.overleafWriteBackEnabled}
-                  onChange={(e) =>
-                    setExperimental({
-                      ...experimental,
-                      overleafWriteBackEnabled: e.target.checked,
-                    })
-                  }
-                />
-                <label htmlFor="overleafWriteBackEnabled">
-                  Enable Overleaf write-back
-                  <div className="hint">
-                    Adds <em>Pull from GitHub into Overleaf</em> to the
-                    popup, plus two developer test tools below. Before writing
-                    a file, the extension checks it hasn't changed in Overleaf
-                    since it was read, then reads it again to confirm the
-                    write.
-                  </div>
-                </label>
-              </div>
-
-              {experimental.overleafWriteBackEnabled && (
-                <>
-                  <div className="checkbox-row" style={{ marginTop: 14 }}>
-                    <input
-                      id="requireZipBackupBeforeWriteBack"
-                      type="checkbox"
-                      checked={experimental.requireZipBackupBeforeWriteBack}
-                      onChange={(e) =>
-                        setExperimental({
-                          ...experimental,
-                          requireZipBackupBeforeWriteBack: e.target.checked,
-                        })
-                      }
-                    />
-                    <label htmlFor="requireZipBackupBeforeWriteBack">
-                      Check that Overleaf can export the project before writing
-                      <div className="hint">
-                        Before anything is written, downloads the project's ZIP
-                        from Overleaf and stops if that fails. The ZIP is not
-                        saved: to keep a copy you can restore, download the
-                        project yourself (<em>File → Download → Download as
-                        source (.zip)</em>). To undo a pull, use Overleaf's
-                        History.
-                      </div>
-                    </label>
-                  </div>
-
-                  <div className="checkbox-row" style={{ marginTop: 14 }}>
-                    <input
-                      id="requireConfirmationBeforeWriteBack"
-                      type="checkbox"
-                      checked={experimental.requireConfirmationBeforeWriteBack}
-                      onChange={(e) =>
-                        setExperimental({
-                          ...experimental,
-                          requireConfirmationBeforeWriteBack: e.target.checked,
-                        })
-                      }
-                    />
-                    <label htmlFor="requireConfirmationBeforeWriteBack">
-                      Ask me to confirm before replacing files in Overleaf
-                      <div className="hint">
-                        Shows the files a pull would replace and asks you to
-                        type 'replace' before anything is written.
-                      </div>
-                    </label>
-                  </div>
-
-                  <div className="checkbox-row" style={{ marginTop: 14 }}>
-                    <input
-                      id="allowBinaryWriteBack"
-                      type="checkbox"
-                      checked={experimental.allowBinaryWriteBack}
-                      onChange={(e) =>
-                        setExperimental({
-                          ...experimental,
-                          allowBinaryWriteBack: e.target.checked,
-                        })
-                      }
-                    />
-                    <label htmlFor="allowBinaryWriteBack">
-                      Allow uploading new images and other non-text files
-                      <div className="hint">
-                        Images, PDFs and other non-text files that are on GitHub
-                        but not in Overleaf are uploaded when <em>Also create new
-                        files in Overleaf</em> is ticked. Files already in
-                        Overleaf are never replaced.
-                      </div>
-                    </label>
-                  </div>
-
-                  <div className="checkbox-row" style={{ marginTop: 14 }}>
-                    <input
-                      id="includeAllFileTypes"
-                      type="checkbox"
-                      checked={experimental.includeAllFileTypes}
-                      onChange={(e) =>
-                        setExperimental({
-                          ...experimental,
-                          includeAllFileTypes: e.target.checked,
-                        })
-                      }
-                    />
-                    <label htmlFor="includeAllFileTypes">
-                      Include all file types
-                      <div className="hint">
-                        The pull copies every text file, whatever its type, and the
-                        list below is not used.
-                      </div>
-                    </label>
-                  </div>
-
-                  <div className="field" style={{ marginTop: 18 }}>
-                    <label htmlFor="writeBackExts">Allowed write-back extensions</label>
-                    <textarea
-                      id="writeBackExts"
-                      value={extText}
-                      onChange={(e) => setExtText(e.target.value)}
-                      disabled={experimental.includeAllFileTypes}
-                      spellCheck={false}
-                      style={{ minHeight: 110 }}
-                    />
-                    <div className="hint">
-                      One extension per line. Defaults: <code>.tex</code>,{' '}
-                      <code>.bib</code>, <code>.cls</code>, <code>.sty</code>,{' '}
-                      <code>.bst</code>, <code>.md</code>, <code>.txt</code>.
-                    </div>
-                  </div>
-
-                  <WriteBackDevPanel experimental={experimental} />
-                  <PullFromGitHubDevPanel links={links} experimental={experimental} />
-                </>
-              )}
-            </div>
-
-            <div className="experimental-feature-card">
-              <h3 className="experimental-feature-heading">
-                Local replica
-              </h3>
-              <div className="checkbox-row">
-                <input
-                  id="localReplicaEnabled"
-                  type="checkbox"
-                  checked={experimental.localReplicaEnabled}
-                  onChange={(e) =>
-                    setExperimental({
-                      ...experimental,
-                      localReplicaEnabled: e.target.checked,
-                    })
-                  }
-                />
-                <label htmlFor="localReplicaEnabled">
-                  Enable local replica prototype
-                  <div className="hint">
-                    Local folder comparison isn't available yet. This setting
-                    does nothing for now.
-                  </div>
-                </label>
-              </div>
-            </div>
-
-          </div>
-        )}
-
-        <div className="actions" style={{ marginTop: 16 }}>
-          <button
-            type="button"
-            className="button primary"
-            onClick={saveExperimental}
-            disabled={expSave.kind === 'saving'}
-            aria-busy={expSave.kind === 'saving'}
-          >
-            {expSave.kind === 'saving' ? (
-              <>
-                <span className="spinner" aria-hidden="true" />
-                Saving…
-              </>
-            ) : (
-              'Save live sync settings'
-            )}
-          </button>
-          <span
-            className={
-              expSave.kind === 'saved'
-                ? 'save-status ok'
-                : expSave.kind === 'error'
-                  ? 'save-status err'
-                  : 'save-status'
-            }
-            role="status"
-            aria-live="polite"
-            aria-atomic="true"
-          >
-            {expSave.kind === 'saved' && 'Saved.'}
-            {expSave.kind === 'error' && `Save failed: ${expSave.message}`}
-          </span>
-        </div>
-      </section>
-
-      <div className="actions">
-        <button type="button" className="button" onClick={resetAll}>
-          Reset all settings
-        </button>
+        </section>
       </div>
     </div>
   );
@@ -710,28 +802,13 @@ function MappingRow({
   };
 
   return (
-    <div
-      style={{
-        border: '1px solid var(--border)',
-        borderRadius: 8,
-        padding: '12px 14px',
-        background: 'var(--bg)',
-      }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'baseline',
-          justifyContent: 'space-between',
-          gap: 12,
-          flexWrap: 'wrap',
-        }}
-      >
-        <div style={{ minWidth: 0 }}>
+    <div className="mapping-item">
+      <div className="mapping-row">
+        <div className="mapping-info">
           <div style={{ fontWeight: 600 }}>
             <code>{link.repo.owner}/{link.repo.repo}</code>
           </div>
-          <div className="hint" style={{ marginTop: 2 }}>
+          <div className="hint">
             Project <code>{projectId}</code> · branch <code>{link.repo.branch}</code>
             {link.repo.targetDir ? (
               <>
@@ -744,7 +821,7 @@ function MappingRow({
         <div className="actions" style={{ paddingTop: 0 }}>
           <button
             type="button"
-            className="button"
+            className="button small"
             onClick={runTest}
             disabled={test.kind === 'running'}
             aria-busy={test.kind === 'running'}
@@ -758,10 +835,10 @@ function MappingRow({
               'Test'
             )}
           </button>
-          <button type="button" className="button" onClick={onEdit} disabled={isEditing}>
+          <button type="button" className="button small" onClick={onEdit} disabled={isEditing}>
             {isEditing ? 'Editing…' : 'Edit'}
           </button>
-          <button type="button" className="button" onClick={onRemove}>
+          <button type="button" className="button small" onClick={onRemove}>
             Remove
           </button>
         </div>
@@ -796,18 +873,10 @@ function MappingEditor({
     onChange({ ...state, repo: { ...state.repo, ...patch } });
 
   return (
-    <div
-      style={{
-        border: '1px solid var(--accent)',
-        borderRadius: 8,
-        padding: '18px 18px',
-        marginTop: 16,
-        background: 'var(--bg)',
-      }}
-    >
-      <h2 style={{ marginTop: 0 }}>
+    <div className="mapping-editor">
+      <h3 className="editor-heading">
         {state.isNew ? 'Add a project mapping' : `Edit mapping`}
-      </h2>
+      </h3>
 
       {state.isNew && (
         <div className="field">
@@ -1087,17 +1156,8 @@ function WriteBackDevPanel({
   const canWrite = haveBase && newText !== baseText && busy === 'idle';
 
   return (
-    <div
-      style={{
-        marginTop: 22,
-        padding: '14px 14px 16px',
-        border: '1px dashed var(--border)',
-        borderRadius: 8,
-      }}
-    >
-      <h3 style={{ margin: '0 0 4px', fontSize: 14 }}>
-        Developer write-back test
-      </h3>
+    <div className="dev-panel">
+      <h3>Write-back test</h3>
       <div className="hint" style={{ marginBottom: 12 }}>
         For testing write-back by hand. Reads one text file, lets you edit
         it, then writes it back with the same checks as Pull from GitHub
@@ -1428,17 +1488,8 @@ function PullFromGitHubDevPanel({
 
   if (entries.length === 0) {
     return (
-      <div
-        style={{
-          marginTop: 22,
-          padding: '14px 14px 16px',
-          border: '1px dashed var(--border)',
-          borderRadius: 8,
-        }}
-      >
-        <h3 style={{ margin: '0 0 4px', fontSize: 14 }}>
-          Developer pull test (GitHub → Overleaf)
-        </h3>
+      <div className="dev-panel">
+        <h3>Pull test (GitHub → Overleaf)</h3>
         <div className="hint">
           Add a project → repo mapping above before you can pull from GitHub
           into Overleaf.
@@ -1475,17 +1526,8 @@ function PullFromGitHubDevPanel({
   const notInOverleaf = createResults ? [] : noOverleafDocs;
 
   return (
-    <div
-      style={{
-        marginTop: 22,
-        padding: '14px 14px 16px',
-        border: '1px dashed var(--border)',
-        borderRadius: 8,
-      }}
-    >
-      <h3 style={{ margin: '0 0 4px', fontSize: 14 }}>
-        Developer pull test (GitHub → Overleaf)
-      </h3>
+    <div className="dev-panel">
+      <h3>Pull test (GitHub → Overleaf)</h3>
       <div className="hint" style={{ marginBottom: 12 }}>
         Copies the linked GitHub branch into the chosen project, like the
         popup. You see every change before anything is written. The project

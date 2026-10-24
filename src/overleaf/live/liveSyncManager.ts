@@ -170,7 +170,7 @@ export async function fetchOverleafLiveSnapshot(
     throw new LiveSyncError(
       'live_sync_disabled',
       'Reading from the Overleaf tab is turned off in Options.',
-      'Turn on “Enable reading from the Overleaf tab” in Options.',
+      'Turn on “Read from the open Overleaf tab” in Options.',
     );
   }
 
