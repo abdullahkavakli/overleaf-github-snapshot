@@ -1695,8 +1695,7 @@ function RepoSummary({
   // one adds the Overleaf project ID and the target folder.
   return (
     <details className="repo-summary">
-      <summary>
-        <span className="k">Repo</span>
+      <summary title="GitHub repository and branch">
         <code>
           {config.owner}/{config.repo}
         </code>
