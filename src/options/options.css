@@ -172,6 +172,7 @@ section h2 code {
 
 .field input[type='text'],
 .field input[type='password'],
+.field select,
 .field textarea {
   width: 100%;
   font-family: var(--font-sans);
@@ -194,12 +195,14 @@ section h2 code {
 
 .field input[type='text']:hover,
 .field input[type='password']:hover,
+.field select:hover,
 .field textarea:hover {
   border-color: var(--text-muted);
 }
 
 .field input[type='text']:focus-visible,
 .field input[type='password']:focus-visible,
+.field select:focus-visible,
 .field textarea:focus-visible {
   outline: none;
   border-color: var(--accent);
@@ -606,6 +609,7 @@ code {
   .button,
   .token-row .toggle,
   .field input,
+  .field select,
   .field textarea {
     transition: none;
   }
