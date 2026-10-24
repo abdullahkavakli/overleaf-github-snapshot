@@ -567,13 +567,13 @@ input[type='text']:focus {
 
 .checkbox-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   font-size: 12px;
 }
 
 .checkbox-row input[type='checkbox'] {
-  margin: 0;
+  margin: 3px 0 0;
 }
 
 .delete-warning {
