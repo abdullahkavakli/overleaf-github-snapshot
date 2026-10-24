@@ -671,7 +671,6 @@ function LinkSetupView({
     <>
       <section className="mode-section">
         <h2 className="mode-title">
-          <span className="mode-badge setup">Setup</span>
           Link this Overleaf project to a GitHub repo
         </h2>
         <div className="muted">
@@ -823,7 +822,6 @@ function NoTabView({ onOpenOptions }: { onOpenOptions: () => void }): React.Reac
     <>
       <section className="mode-section">
         <h2 className="mode-title">
-          <span className="mode-badge fallback">No tab</span>
           No Overleaf project tab open
         </h2>
         <div className="muted">
@@ -857,7 +855,6 @@ function PickProjectView({
     <>
       <section className="mode-section">
         <h2 className="mode-title">
-          <span className="mode-badge fallback">No tab</span>
           No Overleaf project tab open
         </h2>
         <div className="muted">
@@ -950,7 +947,6 @@ function ReadyView({
       {showManual && (
         <section className="mode-section">
           <h2 className="mode-title">
-            <span className="mode-badge fallback">Fallback</span>
             Manual ZIP upload
           </h2>
           <div className="muted">
