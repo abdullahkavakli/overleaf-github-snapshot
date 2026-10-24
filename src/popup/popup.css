@@ -55,7 +55,7 @@ body {
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
   font-size: 13px;
-  /* 1.5 (was 1.4): the v0.4 experimental status hints, warning lists,
+  /* 1.5 (was 1.4): the v0.4 status hints, warning lists,
      and recovery text are multi-line; 1.4 ran them too tight. Dense
      single-line rows (.diff-row) re-assert 1.4 locally so the diff
      list stays compact. */
@@ -130,11 +130,57 @@ body {
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 8px 10px;
+}
+
+.repo-summary > summary {
+  cursor: pointer;
+  padding: 6px 10px;
+  list-style: none;
+  user-select: none;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.repo-summary > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* A drawn triangle rather than a glyph: '▸' is tiny at this size, and
+   larger arrow characters can render as emoji on Windows. */
+.repo-summary > summary::before {
+  content: '';
+  align-self: center;
+  flex-shrink: 0;
+  border-left: 7px solid var(--text-muted);
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  transition: transform 0.12s ease;
+}
+
+.repo-summary[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.repo-summary > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 6px;
+}
+
+.repo-summary-branch {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.repo-summary-grid {
   display: grid;
   grid-template-columns: auto 1fr;
+  align-items: baseline;
   column-gap: 8px;
   row-gap: 2px;
+  padding: 0 10px 8px 25px;
 }
 
 .repo-summary span.k {
@@ -207,16 +253,17 @@ input[type='file']:focus-visible {
 }
 
 /* The pull button while "Make Overleaf match GitHub exactly" is ticked: that
-   pull can delete files. A fixed red keeps white text readable in both themes. */
+   pull can delete files. It looks like any other button until it is hovered
+   or focused, then turns into a red outline. */
 .button.danger {
-  background: #cf222e;
-  color: #fff;
-  border-color: #cf222e;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
-.button.danger:hover:not(:disabled) {
-  background: #a40e26;
-  border-color: #a40e26;
+.button.danger:hover:not(:disabled),
+.button.danger:focus-visible {
+  background: var(--bg);
+  color: var(--danger);
+  border-color: var(--danger);
 }
 
 .button.full {
@@ -639,11 +686,6 @@ input[type='text']:focus {
   gap: 6px;
 }
 
-.mode-section.experimental {
-  border-color: color-mix(in srgb, var(--warning-text), transparent 60%);
-  background: color-mix(in srgb, var(--warning-bg), transparent 80%);
-}
-
 .mode-title {
   margin: 0 0 2px;
   font-size: 12px;
@@ -666,7 +708,7 @@ input[type='text']:focus {
   border: 1px solid transparent;
 }
 
-.mode-badge.stable {
+.mode-badge.setup {
   background: color-mix(in srgb, var(--success), transparent 80%);
   color: var(--success);
   border-color: color-mix(in srgb, var(--success), transparent 60%);
@@ -676,10 +718,4 @@ input[type='text']:focus {
   background: var(--bg-subtle);
   color: var(--text-muted);
   border-color: var(--border);
-}
-
-.mode-badge.experimental {
-  background: color-mix(in srgb, var(--warning-text), transparent 80%);
-  color: var(--warning-text);
-  border-color: color-mix(in srgb, var(--warning-text), transparent 60%);
 }

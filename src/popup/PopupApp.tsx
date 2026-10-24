@@ -158,7 +158,7 @@ export function Popup(): React.ReactElement {
   const [overleafContext, setOverleafContext] =
     useState<OverleafProjectContext | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
-  // Sticky for the lifetime of this popup mount: once the stable
+  // Sticky for the lifetime of this popup mount: once the automatic
   // "Fetch from current Overleaf project" action has failed, the manual
   // ZIP upload section is revealed and stays revealed. We don't reset on
   // restart() because re-hiding after the user just learned the fallback
@@ -671,7 +671,7 @@ function LinkSetupView({
     <>
       <section className="mode-section">
         <h2 className="mode-title">
-          <span className="mode-badge stable">Setup</span>
+          <span className="mode-badge setup">Setup</span>
           Link this Overleaf project to a GitHub repo
         </h2>
         <div className="muted">
@@ -926,24 +926,17 @@ function ReadyView({
 
       <section className="mode-section">
         <h2 className="mode-title">
-          <span className="mode-badge stable">Stable</span>
           Commit Overleaf snapshot to GitHub
         </h2>
         {overleafContext ? (
-          <>
-            <div className="muted">
-              Current Overleaf project detected.<br />
-              Project ID: <code>{overleafContext.projectId}</code>
-            </div>
-            <button
-              className="button primary full"
-              type="button"
-              onClick={onAutomatic}
-              style={{ marginTop: 8 }}
-            >
-              Fetch from current Overleaf project
-            </button>
-          </>
+          <button
+            className="button primary full"
+            type="button"
+            onClick={onAutomatic}
+            style={{ marginTop: 8 }}
+          >
+            Fetch from current Overleaf project
+          </button>
         ) : (
           <div className="muted">
             No active Overleaf project tab.{' '}
@@ -979,9 +972,8 @@ function ReadyView({
 
       {experimental.experimentalLiveSyncEnabled &&
         experimental.liveReadOnlyPullEnabled && (
-          <section className="mode-section experimental">
+          <section className="mode-section">
             <h2 className="mode-title">
-              <span className="mode-badge experimental">Experimental</span>
               Read from the open Overleaf tab (Overleaf → GitHub)
             </h2>
             <div className="muted">
@@ -1020,9 +1012,8 @@ function ReadyView({
       {experimental.experimentalLiveSyncEnabled &&
         experimental.overleafWriteBackEnabled &&
         !overleafContext && (
-          <section className="mode-section experimental">
+          <section className="mode-section">
             <h2 className="mode-title">
-              <span className="mode-badge experimental">Experimental</span>
               Pull from GitHub into Overleaf
             </h2>
             <div className="muted">
@@ -1033,9 +1024,8 @@ function ReadyView({
         )}
 
       {experimental.experimentalLiveSyncEnabled && experimental.localReplicaEnabled && (
-        <section className="mode-section experimental">
+        <section className="mode-section">
           <h2 className="mode-title">
-            <span className="mode-badge experimental">Experimental</span>
             Local replica
           </h2>
           <div className="muted">
@@ -1268,18 +1258,16 @@ function PullFromGitHubSection({
   const notInOverleaf = createResults ? [] : noOverleafDocs;
 
   return (
-    <section className="mode-section experimental">
+    <section className="mode-section">
       <h2 className="mode-title">
-        <span className="mode-badge experimental">Experimental</span>
         Pull from GitHub into Overleaf
       </h2>
       <div className="muted">
-        Copies the latest version of <code>{repoConfig.branch}</code> from{' '}
+        Copies <code>{repoConfig.branch}</code> from{' '}
         <code>{repoConfig.owner}/{repoConfig.repo}</code>
         {repoConfig.targetDir ? <> (only <code>{repoConfig.targetDir}/</code>)</> : null}
-        {' '}into this Overleaf project. You first see which files would
-        change, and nothing is written until you confirm. New files (on
-        GitHub but not in Overleaf) are left out unless you opt in below.
+        {' '}into this project. You see every change before anything is
+        written.
       </div>
 
       {mode === 'idle' && (
@@ -1297,12 +1285,9 @@ function PullFromGitHubSection({
             <span>
               Also create new files in Overleaf
               <div className="muted" style={{ fontSize: 11 }}>
-                Adds files that are on GitHub but not yet in Overleaf,
-                creating folders as needed. Text files must have an allowed
-                type; images, PDFs and other non-text files are uploaded only
-                if <em>Allow uploading new images and other non-text
-                files</em> is on in Options.
-                {mirror && ' Included while Make Overleaf match GitHub exactly is on, for every file type.'}
+                {mirror
+                  ? 'Always on while matching GitHub, for every file type.'
+                  : 'Adds files that are only on GitHub, of the types allowed in Options.'}
               </div>
             </span>
           </label>
@@ -1319,10 +1304,9 @@ function PullFromGitHubSection({
             <span>
               Make Overleaf match GitHub exactly
               <div className="muted" style={{ fontSize: 11 }}>
-                Also deletes files that aren&apos;t on GitHub and replaces
-                uploaded files that differ. You&apos;ll see the list and type{' '}
-                <strong>delete</strong> to confirm. Deleted files can be
-                restored from Overleaf&apos;s History.
+                Also deletes files not on GitHub and replaces uploaded files
+                that differ. You&apos;ll type <strong>delete</strong> to
+                confirm.
               </div>
             </span>
           </label>
@@ -1711,27 +1695,38 @@ function RepoSummary({
   config: RepoConfig;
   projectId: string | null;
 }): React.ReactElement {
+  // Collapsed by default: the closed row shows where commits go, the open
+  // one adds the Overleaf project ID and the target folder.
   return (
-    <div className="repo-summary">
-      {projectId && (
-        <>
-          <span className="k">Project</span>
-          <code>{projectId}</code>
-        </>
-      )}
-      <span className="k">Repo</span>
-      <code>
-        {config.owner}/{config.repo}
-      </code>
-      <span className="k">Branch</span>
-      <code>{config.branch}</code>
-      {config.targetDir ? (
-        <>
-          <span className="k">Target</span>
-          <code>{config.targetDir}/</code>
-        </>
-      ) : null}
-    </div>
+    <details className="repo-summary">
+      <summary>
+        <span className="k">Repo</span>
+        <code>
+          {config.owner}/{config.repo}
+        </code>
+        <span className="repo-summary-branch">· {config.branch}</span>
+      </summary>
+      <div className="repo-summary-grid">
+        {projectId && (
+          <>
+            <span className="k">Project</span>
+            <code>{projectId}</code>
+          </>
+        )}
+        <span className="k">Repo</span>
+        <code>
+          {config.owner}/{config.repo}
+        </code>
+        <span className="k">Branch</span>
+        <code>{config.branch}</code>
+        {config.targetDir ? (
+          <>
+            <span className="k">Target</span>
+            <code>{config.targetDir}/</code>
+          </>
+        ) : null}
+      </div>
+    </details>
   );
 }
 

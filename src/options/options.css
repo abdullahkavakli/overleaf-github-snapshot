@@ -376,21 +376,17 @@ section h2 code {
 }
 
 /* The pull button while "Make Overleaf match GitHub exactly" is ticked: that
-   pull can delete files. A fixed red keeps white text readable in both themes. */
-.button.danger {
-  background: #cf222e;
-  color: #fff;
-  border-color: #cf222e;
-}
-
-.button.danger:hover:not(:disabled) {
-  background: #a40e26;
-  border-color: #a40e26;
+   pull can delete files. It looks like any other button until it is hovered
+   or focused, then turns into a red outline. */
+.button.danger:hover:not(:disabled),
+.button.danger:focus-visible {
+  background: var(--bg);
+  color: var(--danger);
+  border-color: var(--danger);
 }
 
 .button.danger:focus-visible {
-  border-color: #cf222e;
-  box-shadow: 0 0 0 3px color-mix(in srgb, #cf222e, transparent 60%);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger), transparent 60%);
 }
 
 /* ── Banners / status ──────────────────────────────────────── */
@@ -545,16 +541,7 @@ code {
   }
 }
 
-/* ── Experimental section ──────────────────────────────────── */
-
-.experimental-section {
-  border-color: color-mix(in srgb, var(--warning-text), transparent 70%);
-  background: color-mix(in srgb, var(--warning-bg), transparent 80%);
-}
-
-.experimental-section h2::before {
-  background: var(--warning-text);
-}
+/* ── Live sync section ─────────────────────────────────────── */
 
 .experimental-section .field textarea:disabled,
 .experimental-section input[type='checkbox']:disabled + label {
@@ -564,7 +551,7 @@ code {
 .experimental-suboptions {
   margin-top: 4px;
   padding-left: 14px;
-  border-left: 2px solid color-mix(in srgb, var(--warning-text), transparent 60%);
+  border-left: 2px solid var(--border);
   animation: ofs-disclose 200ms ease-out;
   transform-origin: top left;
   display: flex;
@@ -581,7 +568,7 @@ code {
   transform-origin: top left;
 }
 
-/* One bordered card per experimental sub-feature so they read as
+/* One bordered card per live sync sub-feature so they read as
    independently togglable features rather than a flat option list. */
 .experimental-feature-card {
   margin-top: 0;

@@ -220,7 +220,7 @@ export function Options(): React.ReactElement {
   const resetAll = async () => {
     if (
       !confirm(
-        'Reset all settings? This removes every linked project and saved GitHub token and resets display and experimental settings. Nothing on GitHub or Overleaf is changed.',
+        'Reset all settings? This removes every linked project and saved GitHub token and resets display and live sync settings. Nothing on GitHub or Overleaf is changed.',
       )
     ) {
       return;
@@ -378,15 +378,7 @@ export function Options(): React.ReactElement {
       </section>
 
       <section aria-labelledby="sec-experimental" className="experimental-section">
-        <h2 id="sec-experimental">Experimental Overleaf Live Sync</h2>
-        <div className="banner info" style={{ marginBottom: 14 }}>
-          <strong>Experimental.</strong> These features depend on Overleaf
-          internals that are not officially documented and may break without
-          warning. The stable workflow is the automatic ZIP snapshot. Pull
-          from GitHub into Overleaf is on by default, and still shows a
-          preview before it changes anything. The other experimental features
-          are off by default. These settings are global (not per project).
-        </div>
+        <h2 id="sec-experimental">Overleaf Live Sync</h2>
 
         <div className="checkbox-row">
           <input
@@ -403,9 +395,9 @@ export function Options(): React.ReactElement {
             }
           />
           <label htmlFor="experimentalLiveSyncEnabled">
-            Enable experimental live sync
+            Enable live sync
             <div className="hint">
-              Shows the experimental features below, each with its own switch.
+              Shows the features below, each with its own switch.
               Overleaf write-back starts on; the others start off. When this
               is off, none of them run.
             </div>
@@ -629,7 +621,7 @@ export function Options(): React.ReactElement {
                 Saving…
               </>
             ) : (
-              'Save experimental settings'
+              'Save live sync settings'
             )}
           </button>
           <span
@@ -969,12 +961,12 @@ function MappingEditor({
   );
 }
 
-// Developer harness for the experimental write-back path. Picks a doc
+// Developer harness for the write-back path. Picks a doc
 // by path via the live bridge (LIVE_FETCH_PROJECT_METADATA -> doc id ->
 // LIVE_READ_DOC), lets the user edit, then runs the full
 // writeSelectedFilesBackToOverleaf orchestration so all the existing
 // safety gates (ZIP backup, conflict detector, OT, verify-after-write)
-// are exercised end-to-end. Honors the user's experimental config
+// are exercised end-to-end. Honors the user's live sync config
 // (allowed extensions, allowBinary, requireZipBackup). Manual confirmation
 // is the click on "Write back" itself, so requireConfirmation is wired
 // to false here regardless of the persisted toggle.
@@ -1460,10 +1452,9 @@ function PullFromGitHubDevPanel({
         Developer pull test (GitHub → Overleaf)
       </h3>
       <div className="hint" style={{ marginBottom: 12 }}>
-        Copies the latest version of the linked GitHub branch into the
-        chosen Overleaf project, the same way as the popup. You first see
-        which files would change, and nothing is written until you
-        confirm. The project must be open in an Overleaf tab.
+        Copies the linked GitHub branch into the chosen project, like the
+        popup. You see every change before anything is written. The project
+        must be open in an Overleaf tab.
       </div>
 
       <div className="field">
@@ -1494,13 +1485,9 @@ function PullFromGitHubDevPanel({
         <label htmlFor="pgh-create-missing">
           Also create new files in Overleaf
           <div className="hint">
-            Adds files that are on GitHub but not yet in Overleaf, creating
-            folders as needed. Text files must have an allowed type; images,
-            PDFs and other non-text files are uploaded only if{' '}
-            <em>Allow uploading new images and other non-text files</em> is
-            on.
-            {mirror &&
-              ' Included while Make Overleaf match GitHub exactly is on, for every file type.'}
+            {mirror
+              ? 'Always on while matching GitHub, for every file type.'
+              : 'Adds files that are only on GitHub, of the allowed types.'}
           </div>
         </label>
       </div>
@@ -1516,10 +1503,8 @@ function PullFromGitHubDevPanel({
         <label htmlFor="pgh-mirror">
           Make Overleaf match GitHub exactly
           <div className="hint">
-            Also deletes files that aren&apos;t on GitHub and replaces
-            uploaded files that differ. You&apos;ll see the list and type{' '}
-            <strong>delete</strong> to confirm. Deleted files can be
-            restored from Overleaf&apos;s History.
+            Also deletes files not on GitHub and replaces uploaded files that
+            differ. You&apos;ll type <strong>delete</strong> to confirm.
           </div>
         </label>
       </div>
