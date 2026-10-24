@@ -606,7 +606,10 @@ input[type='text']:focus {
     border-top-color: var(--accent);
   }
   .button,
-  .gear {
+  .button.danger,
+  .gear,
+  .repo-summary > summary::before,
+  .diff-section summary::before {
     transition: none;
   }
 }
