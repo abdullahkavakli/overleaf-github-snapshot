@@ -1259,11 +1259,8 @@ function PullFromGitHubSection({
         Pull from GitHub into Overleaf
       </h2>
       <div className="muted">
-        Copies <code>{repoConfig.branch}</code> from{' '}
-        <code>{repoConfig.owner}/{repoConfig.repo}</code>
-        {repoConfig.targetDir ? <> (only <code>{repoConfig.targetDir}/</code>)</> : null}
-        {' '}into this project. You see every change before anything is
-        written.
+        Copy from repo into this project. You see every change before
+        anything is written.
       </div>
 
       {mode === 'idle' && (
